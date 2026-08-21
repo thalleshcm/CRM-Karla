@@ -1,0 +1,7 @@
+{
+  "name": "Aurum Imóveis CRM",
+  "description": "Sistema CRM imobiliário de alto padrão com controle de perfis (Administrador, Gerente e Corretor), integração com Evolution API WhatsApp, gerador de link/portal do cliente com identificador para coleta e upload de documentos, gestão avançada de contratos e divisão de comissões (splits e bônus).",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
