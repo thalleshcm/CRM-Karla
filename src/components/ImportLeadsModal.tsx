@@ -1,24 +1,176 @@
-import React, { useState } from 'react';
-import { X, Upload, MessageSquare, FileSpreadsheet, Check, AlertCircle } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import { X, Upload, MessageSquare, FileSpreadsheet, Check, AlertCircle, ArrowLeft, FileUp } from 'lucide-react';
 import { useCrm } from '../context/CrmContext';
+import { useEscapeToClose } from '../hooks/useEscapeToClose';
+import { ImportLeadRow, ImportResult } from '../context/CrmContext';
+
+type CsvStep = 'upload' | 'map' | 'result';
+type FieldKey = 'name' | 'phone' | 'email' | 'propertyInterest' | 'estimatedValue' | 'origin';
+
+const FIELD_LABELS: Record<FieldKey, string> = {
+  name: 'Nome *',
+  phone: 'Telefone *',
+  email: 'E-mail',
+  propertyInterest: 'Imóvel de interesse',
+  estimatedValue: 'Valor estimado',
+  origin: 'Origem'
+};
+
+const FIELD_KEYWORDS: Record<FieldKey, string[]> = {
+  name: ['nome', 'name', 'cliente', 'lead'],
+  phone: ['telefone', 'phone', 'celular', 'whatsapp', 'fone', 'contato'],
+  email: ['email', 'e-mail'],
+  propertyInterest: ['imovel', 'empreendimento', 'interesse', 'property', 'unidade'],
+  estimatedValue: ['valor', 'value', 'preco', 'price', 'vgv'],
+  origin: ['origem', 'source', 'canal']
+};
+
+const normalizeText = (s: string): string =>
+  String(s || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '');
+
+function autoDetectColumns(headerRow: string[]): Record<FieldKey, number | null> {
+  const map = {} as Record<FieldKey, number | null>;
+  (Object.keys(FIELD_KEYWORDS) as FieldKey[]).forEach(field => {
+    const idx = headerRow.findIndex(h => FIELD_KEYWORDS[field].some(k => normalizeText(h).includes(k)));
+    map[field] = idx >= 0 ? idx : null;
+  });
+  return map;
+}
+
+// Accepts both "1.200.000,50" (pt-BR) and "1200000.50" (plain) shaped values.
+function parseLocaleNumber(raw: string): number | undefined {
+  const cleaned = String(raw || '').replace(/[^\d,.-]/g, '');
+  if (!cleaned) return undefined;
+  const normalized = cleaned.includes(',') ? cleaned.replace(/\./g, '').replace(',', '.') : cleaned;
+  const n = parseFloat(normalized);
+  return isNaN(n) ? undefined : n;
+}
 
 export const ImportLeadsModal: React.FC = () => {
-  const {
-    isImportModalOpen,
-    setIsImportModalOpen,
-    importType,
-    setImportType,
-    addLead,
-    activeFunnelId,
-    triggerConfetti
-  } = useCrm();
+  const { isImportModalOpen, setIsImportModalOpen, importType, setImportType, addLead, activeFunnelId, funnels, importLeadsBulk, triggerConfetti } =
+    useCrm();
 
+  // WhatsApp paste-text flow (unchanged from before)
   const [rawText, setRawText] = useState('');
   const [importedCount, setImportedCount] = useState<number | null>(null);
 
+  // CSV/XLS file-upload wizard
+  const [csvStep, setCsvStep] = useState<CsvStep>('upload');
+  const [fileName, setFileName] = useState('');
+  const [rawRows, setRawRows] = useState<string[][]>([]);
+  const [hasHeaderRow, setHasHeaderRow] = useState(true);
+  const [colMap, setColMap] = useState<Record<FieldKey, number | null>>({
+    name: null,
+    phone: null,
+    email: null,
+    propertyInterest: null,
+    estimatedValue: null,
+    origin: null
+  });
+  const [targetFunnelId, setTargetFunnelId] = useState(activeFunnelId || 'investidores');
+  const [parseError, setParseError] = useState('');
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState<ImportResult | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+
+  useEscapeToClose(() => setIsImportModalOpen(false), isImportModalOpen);
+
+  const resetCsvWizard = () => {
+    setCsvStep('upload');
+    setFileName('');
+    setRawRows([]);
+    setHasHeaderRow(true);
+    setColMap({ name: null, phone: null, email: null, propertyInterest: null, estimatedValue: null, origin: null });
+    setParseError('');
+    setImportResult(null);
+  };
+
+  const handleClose = () => {
+    setIsImportModalOpen(false);
+    setRawText('');
+    setImportedCount(null);
+    resetCsvWizard();
+  };
+
   if (!isImportModalOpen) return null;
 
-  const handleImport = (e: React.FormEvent) => {
+  const finalizeParsedRows = (rows: any[][]) => {
+    const cleaned = rows
+      .map(r => r.map(cell => (cell === null || cell === undefined ? '' : String(cell))))
+      .filter(r => r.some(cell => cell.trim() !== ''));
+    if (cleaned.length === 0) {
+      setParseError('Não encontramos dados legíveis nesse arquivo.');
+      return;
+    }
+    setRawRows(cleaned);
+    setColMap(autoDetectColumns(cleaned[0]));
+    setCsvStep('map');
+  };
+
+  const handleFile = async (file: File) => {
+    setParseError('');
+    setFileName(file.name);
+    try {
+      if (/\.(xlsx|xls)$/i.test(file.name)) {
+        // Dynamically imported — xlsx is a large lib only needed by this
+        // rarely-used modal, no reason to bloat the app's main bundle.
+        const XLSX = await import('xlsx');
+        const buffer = await file.arrayBuffer();
+        const workbook = XLSX.read(buffer, { type: 'array' });
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: '' }) as any[][];
+        finalizeParsedRows(rows);
+      } else {
+        const Papa = (await import('papaparse')).default;
+        Papa.parse(file, {
+          skipEmptyLines: true,
+          complete: res => finalizeParsedRows(res.data as any[][]),
+          error: (err: any) => setParseError(err?.message || 'Falha ao ler o CSV')
+        });
+      }
+    } catch (err: any) {
+      setParseError(err?.message || 'Falha ao ler o arquivo. Verifique se é um .csv, .xlsx ou .xls válido.');
+    }
+  };
+
+  const dataRows = hasHeaderRow ? rawRows.slice(1) : rawRows;
+  const previewRows = dataRows.slice(0, 5);
+  const canProceedToImport = colMap.name !== null && colMap.phone !== null;
+
+  const buildImportRows = (): ImportLeadRow[] => {
+    return dataRows
+      .map(r => ({
+        name: colMap.name !== null ? (r[colMap.name] || '').trim() : '',
+        phone: colMap.phone !== null ? (r[colMap.phone] || '').trim() : '',
+        email: colMap.email !== null ? (r[colMap.email] || '').trim() || undefined : undefined,
+        propertyInterest: colMap.propertyInterest !== null ? (r[colMap.propertyInterest] || '').trim() || undefined : undefined,
+        estimatedValue: colMap.estimatedValue !== null ? parseLocaleNumber(r[colMap.estimatedValue]) : undefined,
+        origin: colMap.origin !== null ? (r[colMap.origin] || '').trim() || undefined : undefined,
+        funnelId: targetFunnelId
+      }))
+      .filter(row => row.name || row.phone);
+  };
+
+  const handleCsvImport = async () => {
+    setImporting(true);
+    setParseError('');
+    try {
+      const rows = buildImportRows();
+      const result = await importLeadsBulk(rows);
+      setImportResult(result);
+      setCsvStep('result');
+      if (result.created > 0) triggerConfetti();
+    } catch (err: any) {
+      setParseError(err?.message || 'Falha ao importar os leads.');
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const handleWhatsappImport = (e: React.FormEvent) => {
     e.preventDefault();
     if (!rawText.trim()) return;
 
@@ -27,49 +179,22 @@ export const ImportLeadsModal: React.FC = () => {
 
     lines.forEach(line => {
       if (!line.trim()) return;
+      const phoneMatch = line.match(/\+?\d[\d\s-]{8,}/);
+      const phone = phoneMatch ? phoneMatch[0].replace(/\D/g, '') : '11999999999';
+      const name = line.replace(/\+?\d[\d\s-]{8,}/, '').replace(/[-():]/g, '').trim() || 'Lead WhatsApp';
 
-      // Handle CSV format: Name, Phone, Email, Property, Value
-      if (importType === 'csv' || line.includes(',') || line.includes(';')) {
-        const separator = line.includes(';') ? ';' : ',';
-        const parts = line.split(separator).map(p => p.trim().replace(/^["']|["']$/g, ''));
-        const name = parts[0] || 'Lead Importado';
-        const phone = parts[1] || '11999999999';
-        const email = parts[2]?.includes('@') ? parts[2] : undefined;
-        const property = parts[3] || 'Imóvel em Prospecção';
-        const val = parseFloat(parts[4]) || 800000;
-
-        addLead({
-          name,
-          phone,
-          email,
-          propertyInterest: property,
-          estimatedValue: val,
-          funnelId: activeFunnelId || 'investidores',
-          stageId: 'lead_novo',
-          temperature: 'morno',
-          origin: 'Importação CSV',
-          notes: 'Importado em lote via CSV.'
-        });
-        count++;
-      } else {
-        // WhatsApp format: Name - Phone or Name (Phone)
-        const phoneMatch = line.match(/\+?\d[\d\s-]{8,}/);
-        const phone = phoneMatch ? phoneMatch[0].replace(/\D/g, '') : '11999999999';
-        const name = line.replace(/\+?\d[\d\s-]{8,}/, '').replace(/[-():]/g, '').trim() || 'Lead WhatsApp';
-
-        addLead({
-          name,
-          phone,
-          propertyInterest: 'Empreendimento em Avaliação',
-          estimatedValue: 650000,
-          funnelId: activeFunnelId || 'investidores',
-          stageId: 'lead_novo',
-          temperature: 'morno',
-          origin: 'WhatsApp',
-          notes: 'Importado de contatos do WhatsApp.'
-        });
-        count++;
-      }
+      addLead({
+        name,
+        phone,
+        propertyInterest: 'Empreendimento em Avaliação',
+        estimatedValue: 650000,
+        funnelId: activeFunnelId || 'investidores',
+        stageId: 'lead_novo',
+        temperature: 'morno',
+        origin: 'WhatsApp',
+        notes: 'Importado de contatos do WhatsApp.'
+      });
+      count++;
     });
 
     setImportedCount(count);
@@ -81,13 +206,20 @@ export const ImportLeadsModal: React.FC = () => {
     }, 1800);
   };
 
-  const sampleCsv = `Roberto Silva, 11987654321, roberto@email.com, Reserva dos Lagos, 1200000\nCarla Prado, 11976543210, carla@email.com, Edifício Horizon, 850000`;
   const sampleWa = `Carlos Eduardo - (11) 98111-2233\nFernanda Lima: 11982223344`;
+
+  const columnOptions = useMemo(() => {
+    const headerRow = rawRows[0] || [];
+    return (rawRows[0] || []).map((_, idx) => {
+      const label = hasHeaderRow && headerRow[idx] ? headerRow[idx] : `Coluna ${idx + 1}`;
+      return { idx, label };
+    });
+  }, [rawRows, hasHeaderRow]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#3E4A3D]/40 backdrop-blur-xs animate-in fade-in duration-150">
       <div
-        className="bg-white rounded-2xl w-full max-w-lg shadow-2xl border border-[#EAE7E2] overflow-hidden flex flex-col max-h-[90vh]"
+        className="bg-white rounded-2xl w-full max-w-2xl shadow-2xl border border-[#EAE7E2] overflow-hidden flex flex-col max-h-[90vh]"
         onClick={e => e.stopPropagation()}
       >
         <div className="p-6 border-b border-[#EAE7E2] bg-[#F4F1EA]/70 flex items-center justify-between">
@@ -101,27 +233,32 @@ export const ImportLeadsModal: React.FC = () => {
             </div>
             <div>
               <h3 className="font-serif-title text-lg font-bold text-[#344E41]">
-                {importType === 'whatsapp' ? 'Importar Leads do WhatsApp' : 'Importar Leads via CSV'}
+                {importType === 'whatsapp' ? 'Importar Leads do WhatsApp' : 'Importar Leads via Planilha'}
               </h3>
               <p className="text-xs text-[#3A403A]/60">
-                Cole as linhas abaixo para cadastrar múltiplos leads de uma só vez.
+                {importType === 'whatsapp'
+                  ? 'Cole as linhas abaixo para cadastrar múltiplos leads de uma só vez.'
+                  : 'Envie um arquivo .csv, .xlsx ou .xls — leads com telefone já cadastrado são vinculados ao cliente existente.'}
               </p>
             </div>
           </div>
 
           <button
-            onClick={() => setIsImportModalOpen(false)}
+            onClick={handleClose}
             className="p-1.5 text-[#3A403A]/40 hover:text-[#344E41] rounded-lg hover:bg-[#EAE7E2]/50 transition-colors"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        <form onSubmit={handleImport} className="p-6 space-y-4">
+        <div className="p-6 overflow-y-auto space-y-4">
           <div className="flex items-center gap-2 bg-[#F1EFEC] p-1 rounded-xl">
             <button
               type="button"
-              onClick={() => setImportType('whatsapp')}
+              onClick={() => {
+                setImportType('whatsapp');
+                resetCsvWizard();
+              }}
               className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-all ${
                 importType === 'whatsapp' ? 'bg-white shadow-2xs text-[#344E41]' : 'text-[#3A403A]/70'
               }`}
@@ -135,62 +272,267 @@ export const ImportLeadsModal: React.FC = () => {
                 importType === 'csv' ? 'bg-white shadow-2xs text-[#344E41]' : 'text-[#3A403A]/70'
               }`}
             >
-              Planilha CSV
+              Planilha (CSV / Excel)
             </button>
           </div>
 
-          <div>
-            <div className="flex items-center justify-between mb-1.5">
-              <label className="text-xs font-bold uppercase tracking-widest text-[#3A403A]/70">
-                Cole os dados aqui (1 por linha)
-              </label>
-              <button
-                type="button"
-                onClick={() => setRawText(importType === 'csv' ? sampleCsv : sampleWa)}
-                className="text-xs text-[#588157] hover:text-[#344E41] hover:underline font-semibold"
-              >
-                Colar exemplo
-              </button>
-            </div>
+          {importType === 'whatsapp' ? (
+            <form onSubmit={handleWhatsappImport} className="space-y-4">
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-bold uppercase tracking-widest text-[#3A403A]/70">
+                    Cole os contatos aqui (1 por linha)
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setRawText(sampleWa)}
+                    className="text-xs text-[#588157] hover:text-[#344E41] hover:underline font-semibold"
+                  >
+                    Colar exemplo
+                  </button>
+                </div>
+                <textarea
+                  required
+                  rows={8}
+                  value={rawText}
+                  onChange={e => setRawText(e.target.value)}
+                  placeholder={`Ex:\nCarlos Eduardo - (11) 98111-2233\nFernanda Lima: 11982223344`}
+                  className="w-full text-xs font-mono p-3 bg-[#FDFCFB] border border-[#EAE7E2] rounded-xl text-[#3A403A] placeholder-[#3A403A]/40 focus:outline-hidden focus:border-[#A3B18A]"
+                />
+              </div>
 
-            <textarea
-              required
-              rows={8}
-              value={rawText}
-              onChange={e => setRawText(e.target.value)}
-              placeholder={
-                importType === 'csv'
-                  ? `Nome, Telefone, Email, Imovel, Valor\nEx: João Silva, 11988887777, joao@gmail.com, Mansão Jardins, 2500000`
-                  : `Ex:\nCarlos Eduardo - (11) 98111-2233\nFernanda Lima: 11982223344`
-              }
-              className="w-full text-xs font-mono p-3 bg-[#FDFCFB] border border-[#EAE7E2] rounded-xl text-[#3A403A] placeholder-[#3A403A]/40 focus:outline-hidden focus:border-[#A3B18A]"
-            />
-          </div>
+              {importedCount !== null && (
+                <div className="p-3 bg-[#A3B18A]/20 border border-[#A3B18A]/40 text-[#344E41] rounded-xl text-xs font-semibold flex items-center gap-2">
+                  <Check className="w-4 h-4 text-[#588157]" />
+                  <span>{importedCount} leads importados com sucesso para o Funil!</span>
+                </div>
+              )}
 
-          {importedCount !== null && (
-            <div className="p-3 bg-[#A3B18A]/20 border border-[#A3B18A]/40 text-[#344E41] rounded-xl text-xs font-semibold flex items-center gap-2">
-              <Check className="w-4 h-4 text-[#588157]" />
-              <span>{importedCount} leads importados com sucesso para o Funil!</span>
+              <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-[#EAE7E2]">
+                <button
+                  type="button"
+                  onClick={handleClose}
+                  className="px-4 py-2 border border-[#EAE7E2] text-[#3A403A] hover:bg-[#F1EFEC] text-xs rounded-xl font-medium transition-colors"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2 bg-[#344E41] hover:bg-[#283d33] text-white text-xs rounded-xl font-semibold shadow-xs flex items-center gap-1.5 transition-colors"
+                >
+                  <Upload className="w-3.5 h-3.5" />
+                  <span>Processar Importação</span>
+                </button>
+              </div>
+            </form>
+          ) : (
+            <div className="space-y-4">
+              {parseError && (
+                <div className="p-3 bg-red-50 border border-red-200 text-red-700 rounded-xl text-xs font-medium flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+                  <span>{parseError}</span>
+                </div>
+              )}
+
+              {csvStep === 'upload' && (
+                <label
+                  onDragOver={e => {
+                    e.preventDefault();
+                    setIsDragging(true);
+                  }}
+                  onDragLeave={() => setIsDragging(false)}
+                  onDrop={e => {
+                    e.preventDefault();
+                    setIsDragging(false);
+                    const file = e.dataTransfer.files?.[0];
+                    if (file) handleFile(file);
+                  }}
+                  className={`flex flex-col items-center justify-center gap-2 p-10 border-2 border-dashed rounded-2xl cursor-pointer transition-colors ${
+                    isDragging ? 'border-[#588157] bg-[#588157]/10' : 'border-[#EAE7E2] bg-[#FDFCFB] hover:bg-[#F4F1EA]/60'
+                  }`}
+                >
+                  <FileUp className="w-8 h-8 text-[#588157]" />
+                  <p className="text-xs font-semibold text-[#344E41]">Arraste um arquivo aqui ou clique para escolher</p>
+                  <p className="text-[11px] text-[#3A403A]/50">Formatos aceitos: .csv, .xlsx, .xls</p>
+                  <input
+                    type="file"
+                    accept=".csv,.xlsx,.xls"
+                    className="hidden"
+                    onChange={e => {
+                      const file = e.target.files?.[0];
+                      if (file) handleFile(file);
+                      e.target.value = '';
+                    }}
+                  />
+                </label>
+              )}
+
+              {csvStep === 'map' && (
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs text-[#3A403A]/70">
+                      Arquivo: <strong className="text-[#344E41]">{fileName}</strong> · {dataRows.length} linha(s) de dados
+                    </p>
+                    <label className="flex items-center gap-1.5 text-[11px] text-[#3A403A]/70 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={hasHeaderRow}
+                        onChange={e => setHasHeaderRow(e.target.checked)}
+                        className="accent-[#588157]"
+                      />
+                      A 1ª linha é cabeçalho
+                    </label>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-widest text-[#3A403A]/70 mb-1.5">
+                      Funil de destino
+                    </label>
+                    <select
+                      value={targetFunnelId}
+                      onChange={e => setTargetFunnelId(e.target.value)}
+                      className="w-full text-xs p-2.5 bg-[#FDFCFB] border border-[#EAE7E2] rounded-xl text-[#3A403A] focus:outline-hidden focus:border-[#A3B18A]"
+                    >
+                      {funnels.map(f => (
+                        <option key={f.id} value={f.id}>
+                          {f.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {(Object.keys(FIELD_LABELS) as FieldKey[]).map(field => (
+                      <div key={field}>
+                        <label className="block text-[11px] font-bold uppercase tracking-widest text-[#3A403A]/70 mb-1">
+                          {FIELD_LABELS[field]}
+                        </label>
+                        <select
+                          value={colMap[field] ?? ''}
+                          onChange={e =>
+                            setColMap(prev => ({ ...prev, [field]: e.target.value === '' ? null : Number(e.target.value) }))
+                          }
+                          className="w-full text-xs p-2 bg-[#FDFCFB] border border-[#EAE7E2] rounded-xl text-[#3A403A] focus:outline-hidden focus:border-[#A3B18A]"
+                        >
+                          <option value="">— Não mapear —</option>
+                          {columnOptions.map(opt => (
+                            <option key={opt.idx} value={opt.idx}>
+                              {opt.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    ))}
+                  </div>
+
+                  {previewRows.length > 0 && (
+                    <div>
+                      <p className="text-[11px] font-bold uppercase tracking-widest text-[#3A403A]/70 mb-1.5">
+                        Pré-visualização (primeiras {previewRows.length} linhas)
+                      </p>
+                      <div className="overflow-x-auto border border-[#EAE7E2] rounded-xl">
+                        <table className="w-full text-[11px]">
+                          <thead>
+                            <tr className="bg-[#F4F1EA]">
+                              {(Object.keys(FIELD_LABELS) as FieldKey[]).map(field => (
+                                <th key={field} className="text-left p-2 font-semibold text-[#344E41] whitespace-nowrap">
+                                  {FIELD_LABELS[field].replace(' *', '')}
+                                </th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {previewRows.map((row, i) => (
+                              <tr key={i} className="border-t border-[#EAE7E2]">
+                                {(Object.keys(FIELD_LABELS) as FieldKey[]).map(field => (
+                                  <td key={field} className="p-2 text-[#3A403A]/80 whitespace-nowrap">
+                                    {colMap[field] !== null ? row[colMap[field] as number] || '—' : '—'}
+                                  </td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+
+                  {!canProceedToImport && (
+                    <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-xl p-2.5">
+                      Mapeie pelo menos as colunas de <strong>Nome</strong> e <strong>Telefone</strong> para continuar.
+                    </p>
+                  )}
+
+                  <div className="flex items-center justify-between pt-3 border-t border-[#EAE7E2]">
+                    <button
+                      type="button"
+                      onClick={resetCsvWizard}
+                      className="px-3 py-2 text-[#3A403A] hover:bg-[#F1EFEC] text-xs rounded-xl font-medium transition-colors flex items-center gap-1.5"
+                    >
+                      <ArrowLeft className="w-3.5 h-3.5" />
+                      Escolher outro arquivo
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!canProceedToImport || importing}
+                      onClick={handleCsvImport}
+                      className="px-5 py-2 bg-[#344E41] hover:bg-[#283d33] disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs rounded-xl font-semibold shadow-xs flex items-center gap-1.5 transition-colors"
+                    >
+                      <Upload className="w-3.5 h-3.5" />
+                      <span>{importing ? 'Importando...' : `Importar ${dataRows.length} lead(s)`}</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {csvStep === 'result' && importResult && (
+                <div className="space-y-4">
+                  <div className="p-4 bg-[#A3B18A]/20 border border-[#A3B18A]/40 text-[#344E41] rounded-xl text-xs font-semibold flex items-start gap-2">
+                    <Check className="w-4 h-4 text-[#588157] mt-0.5 shrink-0" />
+                    <div className="space-y-0.5">
+                      <p>{importResult.created} lead(s) importado(s) com sucesso!</p>
+                      {importResult.linkedToExistingClient > 0 && (
+                        <p className="font-normal text-[11px]">
+                          {importResult.linkedToExistingClient} deles vinculado(s) a clientes já cadastrados (telefone já existente).
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  {importResult.errors.length > 0 && (
+                    <div className="p-3 bg-red-50 border border-red-200 text-red-700 rounded-xl text-xs">
+                      <p className="font-semibold mb-1">{importResult.errors.length} linha(s) com erro:</p>
+                      <ul className="space-y-0.5 max-h-32 overflow-y-auto">
+                        {importResult.errors.map((err, i) => (
+                          <li key={i}>
+                            Linha {err.row}: {err.error}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-[#EAE7E2]">
+                    <button
+                      type="button"
+                      onClick={resetCsvWizard}
+                      className="px-4 py-2 border border-[#EAE7E2] text-[#3A403A] hover:bg-[#F1EFEC] text-xs rounded-xl font-medium transition-colors"
+                    >
+                      Importar outro arquivo
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleClose}
+                      className="px-5 py-2 bg-[#344E41] hover:bg-[#283d33] text-white text-xs rounded-xl font-semibold shadow-xs transition-colors"
+                    >
+                      Concluir
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
-
-          <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-[#EAE7E2]">
-            <button
-              type="button"
-              onClick={() => setIsImportModalOpen(false)}
-              className="px-4 py-2 border border-[#EAE7E2] text-[#3A403A] hover:bg-[#F1EFEC] text-xs rounded-xl font-medium transition-colors"
-            >
-              Cancelar
-            </button>
-            <button
-              type="submit"
-              className="px-5 py-2 bg-[#344E41] hover:bg-[#283d33] text-white text-xs rounded-xl font-semibold shadow-xs flex items-center gap-1.5 transition-colors"
-            >
-              <Upload className="w-3.5 h-3.5" />
-              <span>Processar Importação</span>
-            </button>
-          </div>
-        </form>
+        </div>
       </div>
     </div>
   );

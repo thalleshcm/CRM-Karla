@@ -1,51 +1,42 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   X,
   Phone,
   MessageSquare,
   Mail,
-  DollarSign,
-  Cake,
   Flame,
-  Zap,
-  Snowflake,
   Trash2,
-  Edit2,
   CheckCircle2,
   Plus,
-  Send,
-  User,
   UploadCloud,
   FileCheck,
   FileText,
   Copy,
   Check,
   ExternalLink,
-  ShieldCheck,
   Download,
   Eye,
-  AlertCircle,
   ArrowLeft,
   Calendar,
-  Building2,
   Paperclip,
-  Receipt,
-  FileSpreadsheet,
-  Clock,
-  Sparkles,
   Trophy,
   XCircle,
   RotateCcw,
-  Info
+  MoreHorizontal,
+  PhoneCall,
+  ChevronRight,
+  History
 } from 'lucide-react';
 import { useCrm } from '../context/CrmContext';
+import { crmApi } from '../services/api';
 import {
   LeadTemperature,
-  StageId,
   ActivityType,
   LeadOrigin,
   AdditionalBuyer,
   LeadAttachedDocument,
+  DocumentStatus,
+  LeadTimelineEvent,
   CommissionSplitPercents,
   CommissionSplitBonus,
   LOST_REASON_OPTIONS
@@ -55,12 +46,12 @@ import {
   formatCurrency,
   formatPhone,
   getWhatsAppLink,
-  formatDatePtBR,
   formatDateTimePtBR
 } from '../utils/formatters';
 import { ProposalPdfModal } from './ProposalPdfModal';
 import { ContractDossierModal } from './ContractDossierModal';
-import { InvoiceModal } from './InvoiceModal';
+import { computeLeadHealthScore, LEAD_HEALTH_TIER_LABELS, LEAD_HEALTH_TIER_EMOJI } from '../utils/leadHealth';
+import { computeNextBestAction } from '../utils/nextBestAction';
 
 export const LeadDetailModal: React.FC = () => {
   const {
@@ -77,10 +68,12 @@ export const LeadDetailModal: React.FC = () => {
     deleteActivity,
     activities,
     contracts,
+    getClientLeads,
+    registerSale,
+    updateContract,
     settings,
     users,
     currentUser,
-    hasPermission,
     openWhatsAppForLead,
     openClientPortalModal,
     generateClientPortalLink,
@@ -89,7 +82,6 @@ export const LeadDetailModal: React.FC = () => {
 
   // Active Main Tab
   const [activeTab, setActiveTab] = useState<'dados' | 'documentos' | 'atividades' | 'negocio'>('dados');
-  const [isEditing, setIsEditing] = useState(false);
   const [linkCopied, setLinkCopied] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
@@ -98,14 +90,18 @@ export const LeadDetailModal: React.FC = () => {
   const [showLostModal, setShowLostModal] = useState(false);
   const [lostReasonSelected, setLostReasonSelected] = useState<string>(LOST_REASON_OPTIONS[0]);
   const [lostNotesInput, setLostNotesInput] = useState('');
-  const [showWonConfirmModal, setShowWonConfirmModal] = useState(false);
   const [showProposalPdf, setShowProposalPdf] = useState(false);
   const [showDossier, setShowDossier] = useState(false);
-  const [showInvoice, setShowInvoice] = useState(false);
-  const [selectedDocPreview, setSelectedDocPreview] = useState<{ title: string; url: string } | null>(null);
+  const [selectedDocPreview, setSelectedDocPreview] = useState<{ title: string; url: string; fileName: string } | null>(null);
 
   // Documents sub-tab
   const [docBuyerTab, setDocBuyerTab] = useState<'principal' | 'conjuge' | string>('principal');
+
+  // Quick timeline note (Atividades tab)
+  const [quickNote, setQuickNote] = useState('');
+
+  // Central de ações — secondary actions menu
+  const [showMoreActions, setShowMoreActions] = useState(false);
 
   // --- EDIT FORM STATE ---
   // Section 1: Dados Básicos
@@ -123,7 +119,7 @@ export const LeadDetailModal: React.FC = () => {
   const [tag, setTag] = useState('Investidores');
   const [contactStatus, setContactStatus] = useState('Contatado');
   const [lastContactDate, setLastContactDate] = useState('');
-  const [lastContactAttempts, setLastContactAttempts] = useState(2);
+  const [lastContactAttempts, setLastContactAttempts] = useState(0);
 
   // Section 2: Proposta em Negociação
   const [propEnterprise, setPropEnterprise] = useState('');
@@ -205,12 +201,8 @@ export const LeadDetailModal: React.FC = () => {
   const [assignedManagerId, setAssignedManagerId] = useState('');
   const [assignedAffiliateId, setAssignedAffiliateId] = useState('');
   const [referrerFreeName, setReferrerFreeName] = useState('');
-  const [commFirstDueDate, setCommFirstDueDate] = useState('2026-08-21');
+  const [commFirstDueDate, setCommFirstDueDate] = useState('');
   const [isCommissionCompleted, setIsCommissionCompleted] = useState(false);
-
-  // File upload input refs
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const [uploadCategory, setUploadCategory] = useState<string>('outro');
 
   // Load Lead Data into Form States when lead is opened
   useEffect(() => {
@@ -229,8 +221,8 @@ export const LeadDetailModal: React.FC = () => {
     setTemperature(selectedLead.temperature || 'quente');
     setTag(selectedLead.tag || (selectedLead.funnelId === 'investidores' ? 'Investidores' : 'Moradia'));
     setContactStatus(selectedLead.contactStatus || 'Contatado');
-    setLastContactDate(selectedLead.lastContactDate || '21/08/2026, 16:00');
-    setLastContactAttempts(selectedLead.lastContactAttempts || 2);
+    setLastContactDate(selectedLead.lastContactDate || '');
+    setLastContactAttempts(selectedLead.lastContactAttempts || 0);
 
     // Proposal
     const prop = selectedLead.proposal || {};
@@ -313,14 +305,42 @@ export const LeadDetailModal: React.FC = () => {
     setAssignedManagerId(cDet.managerId || '');
     setAssignedAffiliateId(cDet.affiliateId || '');
     setReferrerFreeName(cDet.referrerName || '');
-    setCommFirstDueDate(cDet.firstDueDate || '2026-08-21');
+    setCommFirstDueDate(cDet.firstDueDate || '');
     setIsCommissionCompleted(cDet.isCompletedDirectly || false);
   }, [selectedLead]);
+
+  // Escape closes whichever overlay is on top first (doc preview > lost-reason
+  // dialog > client-portal link modal > proposal/dossier), and only closes the
+  // whole lead modal once nothing else is open on top of it.
+  useEffect(() => {
+    if (!selectedLead) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (selectedDocPreview) setSelectedDocPreview(null);
+      else if (showLostModal) setShowLostModal(false);
+      else if (showAutoRegisterModal) setShowAutoRegisterModal(false);
+      else if (showDossier) setShowDossier(false);
+      else if (showProposalPdf) setShowProposalPdf(false);
+      else setSelectedLead(null);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedLead, selectedDocPreview, showLostModal, showAutoRegisterModal, showDossier, showProposalPdf]);
 
   if (!selectedLead) return null;
 
   const portalLink = generateClientPortalLink(selectedLead);
   const leadActivities = activities.filter(a => a.leadId === selectedLead.id);
+  const otherClientLeads = getClientLeads(selectedLead.clientId).filter(l => l.id !== selectedLead.id);
+
+  // Unified timeline: scheduled activities + automatic/manual history events, newest first
+  type TimelineItem =
+    | { kind: 'activity'; date: string; data: typeof leadActivities[number] }
+    | { kind: 'history'; date: string; data: LeadTimelineEvent };
+  const timelineItems: TimelineItem[] = [
+    ...leadActivities.map(a => ({ kind: 'activity' as const, date: a.dateTime, data: a })),
+    ...(selectedLead.history || []).map(h => ({ kind: 'history' as const, date: h.date, data: h }))
+  ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
   // Financial calculations
   const totalMonthlyFin = finMonthlyCount * finMonthlyValue;
@@ -423,23 +443,81 @@ export const LeadDetailModal: React.FC = () => {
       additionalBuyers
     });
 
-    setIsEditing(false);
     showToast('Alterações salvas com sucesso!');
   };
 
   const handleSaveCommission = () => {
     const saleVal = Number(propValue) || Number(estimatedValue) || 0;
-    const computedCommTotal = commTotalValue || (saleVal * (Number(commPercentOnSale) || 0)) / 100;
+    const commPercentNum = Number(commPercentOnSale) || 0;
+    const computedCommTotal = commTotalValue || (saleVal * commPercentNum) / 100;
+    const enterpriseName = propEnterprise || selectedLead.propertyInterest || 'Empreendimento';
+    const unit = propUnit || '—';
+    const installmentsNum = Number(commInstallments) || 1;
+
+    // 'em_andamento' has no direct Contract-level equivalent — it maps to
+    // 'assinado' (contract signed, commission still running its course).
+    const contractStatusMap: Record<typeof contractStatus, 'assinado' | 'concluido' | 'cancelado'> = {
+      em_andamento: 'assinado',
+      concluido: 'concluido',
+      cancelado: 'cancelado'
+    };
+
+    const existingContractId = selectedLead.contractDetails?.contractId;
+    const existingContract = existingContractId ? contracts.find(c => c.id === existingContractId) : undefined;
+    let linkedContractId = existingContractId;
+
+    if (existingContract) {
+      // Update the linked Contract's metadata — never regenerate commission
+      // installments here, since some may already be marked as paid.
+      updateContract(existingContract.id, {
+        clientName: name || selectedLead.name,
+        enterpriseName,
+        unit,
+        value: saleVal,
+        status: contractStatusMap[contractStatus],
+        commissionPercent: commPercentNum,
+        brokerCommissionPercent: splitPercents.broker,
+        splitPercents,
+        splitBonus,
+        totalCommissionValue: computedCommTotal,
+        brokerCommissionValue: (computedCommTotal * (splitPercents.broker || 0)) / 100,
+        installmentsCount: installmentsNum,
+        isCompletedDirectly: isCommissionCompleted,
+        firstDueDate: commFirstDueDate || existingContract.firstDueDate
+      });
+    } else {
+      // First save for this lead — creates the real Contract + Commission
+      // installment records (previously this only wrote to lead.contractDetails,
+      // an isolated blob invisible to ContractsView/CommissionsView/Dashboard).
+      const newContract = registerSale({
+        leadId: selectedLead.id,
+        brokerId: selectedLead.brokerId || currentUser.id,
+        clientName: name || selectedLead.name,
+        enterpriseName,
+        unit,
+        value: saleVal,
+        commissionPercent: commPercentNum,
+        brokerCommissionPercent: splitPercents.broker,
+        splitPercents,
+        splitBonus,
+        closedAt: new Date().toISOString().split('T')[0],
+        firstDueDate: commFirstDueDate || new Date().toISOString().split('T')[0],
+        installmentsCount: installmentsNum,
+        isCompletedDirectly: isCommissionCompleted
+      });
+      linkedContractId = newContract.id;
+    }
 
     const updatedContractDetails = {
-      enterpriseName: propEnterprise || selectedLead.propertyInterest || 'Empreendimento',
-      unit: propUnit || '—',
+      contractId: linkedContractId,
+      enterpriseName,
+      unit,
       saleValue: saleVal,
-      closedAt: new Date().toISOString().split('T')[0],
+      closedAt: existingContract?.closedAt || new Date().toISOString().split('T')[0],
       status: contractStatus,
-      commissionPercent: Number(commPercentOnSale) || 0,
+      commissionPercent: commPercentNum,
       totalCommissionValue: computedCommTotal,
-      installmentsCount: Number(commInstallments) || 1,
+      installmentsCount: installmentsNum,
       splitPercents,
       splitBonus,
       managerId: assignedManagerId,
@@ -451,15 +529,29 @@ export const LeadDetailModal: React.FC = () => {
       isCompletedDirectly: isCommissionCompleted
     };
 
+    const timelineEntry: LeadTimelineEvent = {
+      id: `h_${Date.now()}`,
+      leadId: selectedLead.id,
+      type: 'note',
+      description: existingContract
+        ? `Comissão/contrato atualizado: ${formatCurrency(computedCommTotal)} em ${installmentsNum}x`
+        : `Venda registrada: ${enterpriseName} — ${formatCurrency(computedCommTotal)} em ${installmentsNum}x`,
+      date: new Date().toISOString(),
+      author: currentUser.name || settings.brokerName
+    };
+
     updateLead(selectedLead.id, {
-      contractDetails: updatedContractDetails
+      contractDetails: updatedContractDetails,
+      history: [timelineEntry, ...(selectedLead.history || [])]
     });
 
-    if (isCommissionCompleted) {
+    // registerSale() already fires confetti when creating a new contract —
+    // only trigger it here for the update path, to avoid double-firing.
+    if (existingContract && isCommissionCompleted) {
       triggerConfetti();
     }
 
-    showToast('Comissão salva com sucesso!');
+    showToast(existingContract ? 'Contrato e comissão atualizados com sucesso!' : 'Venda registrada e comissão gerada com sucesso!');
   };
 
   const handleAddAdditionalBuyer = () => {
@@ -484,6 +576,28 @@ export const LeadDetailModal: React.FC = () => {
 
   const handleRemoveAdditionalBuyer = (index: number) => {
     setAdditionalBuyers(additionalBuyers.filter((_, i) => i !== index));
+  };
+
+  const addTimelineEvent = (type: LeadTimelineEvent['type'], description: string) => {
+    const timelineEntry: LeadTimelineEvent = {
+      id: `h_${Date.now()}`,
+      leadId: selectedLead.id,
+      type,
+      description,
+      date: new Date().toISOString(),
+      author: currentUser.name || settings.brokerName
+    };
+    updateLead(selectedLead.id, {
+      history: [timelineEntry, ...(selectedLead.history || [])]
+    });
+  };
+
+  const handleAddQuickNote = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!quickNote.trim()) return;
+    addTimelineEvent('note', quickNote.trim());
+    setQuickNote('');
+    showToast('Nota registrada na linha do tempo!');
   };
 
   const handleAddActivity = (e: React.FormEvent) => {
@@ -533,40 +647,346 @@ export const LeadDetailModal: React.FC = () => {
     window.open(getWhatsAppLink(selectedLead.phone, text), '_blank', 'noopener,noreferrer');
   };
 
-  // Mock upload document handler for local interactive preview
+  const readFileAsBase64 = (file: File): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve((reader.result as string).split(',')[1] || '');
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+
+  const MAX_UPLOAD_SIZE = 20 * 1024 * 1024; // 20MB — files now go to Storage, not the lead payload
+
   const handleUploadDocument = (category: 'rg_cnh' | 'comprovante_endereco' | 'certidao_estado_civil' | 'declaracao_renda' | 'outro') => {
-    const dummyFileUrl = 'https://images.unsplash.com/photo-1568602471122-7832951cc4c5?w=800&auto=format&fit=crop&q=80';
-    const newDoc: LeadAttachedDocument = {
-      id: `doc_${Date.now()}`,
-      buyerType: docBuyerTab === 'conjuge' ? 'conjuge' : 'principal',
-      category,
-      label: category === 'rg_cnh' ? 'RG ou CNH' : category === 'comprovante_endereco' ? 'Comprovante de Endereço' : category === 'certidao_estado_civil' ? 'Certidão de Estado Civil' : category === 'declaracao_renda' ? 'Declaração de Renda' : 'Documento Adicional',
-      fileName: `${category}_${selectedLead.name.replace(/\s+/g, '_')}.pdf`,
-      fileSize: '1.4 MB',
-      fileDataUrl: dummyFileUrl,
-      uploadedAt: new Date().toISOString(),
-      status: 'aprovado',
-      required: true
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*,.pdf';
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+
+      if (file.size > MAX_UPLOAD_SIZE) {
+        showToast(`Arquivo muito grande (${(file.size / (1024 * 1024)).toFixed(1)} MB). O limite é 20 MB.`);
+        return;
+      }
+
+      showToast('Enviando documento...');
+      try {
+        const base64 = await readFileAsBase64(file);
+        const uploaded = await crmApi.uploadFile(file.name, file.type, base64);
+
+        const label = category === 'rg_cnh' ? 'RG ou CNH' : category === 'comprovante_endereco' ? 'Comprovante de Endereço' : category === 'certidao_estado_civil' ? 'Certidão de Estado Civil' : category === 'declaracao_renda' ? 'Declaração de Renda' : 'Documento Adicional';
+        const newDoc: LeadAttachedDocument = {
+          id: `doc_${Date.now()}`,
+          buyerType: docBuyerTab === 'conjuge' ? 'conjuge' : 'principal',
+          category,
+          label,
+          fileName: file.name,
+          fileSize: `${(uploaded.size / (1024 * 1024)).toFixed(1)} MB`,
+          fileDataUrl: uploaded.url,
+          uploadedAt: new Date().toISOString(),
+          status: 'enviado',
+          required: true
+        };
+
+        const currentDocs = selectedLead.documentsList || [];
+        const wasReplacing = currentDocs.some(d => d.category === category && d.buyerType === newDoc.buyerType);
+        const filtered = currentDocs.filter(d => !(d.category === category && d.buyerType === newDoc.buyerType));
+        const buyerLabel = newDoc.buyerType === 'conjuge' ? 'Cônjuge / 2º Comprador' : 'Comprador principal';
+        const timelineEntry: LeadTimelineEvent = {
+          id: `h_${Date.now()}`,
+          leadId: selectedLead.id,
+          type: 'note',
+          description: `${wasReplacing ? 'Documento reenviado' : 'Documento enviado'}: ${newDoc.label} (${buyerLabel})`,
+          date: new Date().toISOString(),
+          author: currentUser.name || settings.brokerName
+        };
+        updateLead(selectedLead.id, {
+          documentsList: [...filtered, newDoc],
+          history: [timelineEntry, ...(selectedLead.history || [])]
+        });
+        showToast(`Documento (${newDoc.label}) anexado com sucesso!`);
+      } catch (err: any) {
+        showToast(err?.message || 'Falha ao enviar documento.');
+      }
+    };
+    input.click();
+  };
+
+  const downloadFileFromUrl = async (url: string, fileName: string) => {
+    // The download attribute is ignored for cross-origin URLs (e.g. Supabase
+    // Storage), so fetch the file and download it via a same-origin blob URL.
+    if (url.startsWith('data:')) {
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      return;
+    }
+    try {
+      const res = await fetch(url);
+      const blob = await res.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(blobUrl);
+    } catch {
+      window.open(url, '_blank', 'noopener,noreferrer');
+    }
+  };
+
+  const handleDownloadDocument = (doc: LeadAttachedDocument) => {
+    if (!doc.fileDataUrl) return;
+    downloadFileFromUrl(doc.fileDataUrl, doc.fileName || doc.label);
+  };
+
+  const DOC_STATUS_LABELS: Record<DocumentStatus, string> = {
+    pendente: 'Pendente',
+    enviado: 'Aguardando análise',
+    em_analise: 'Em análise',
+    aprovado: 'Aprovado',
+    rejeitado: 'Reprovado',
+    expirado: 'Expirado'
+  };
+  const DOC_STATUS_CLASSES: Record<DocumentStatus, string> = {
+    pendente: 'bg-slate-100 text-slate-600',
+    enviado: 'bg-amber-100 text-amber-800',
+    em_analise: 'bg-blue-100 text-blue-800',
+    aprovado: 'bg-emerald-100 text-emerald-800',
+    rejeitado: 'bg-rose-100 text-rose-800',
+    expirado: 'bg-slate-200 text-slate-500'
+  };
+
+  const handleSetDocumentStatus = (docId: string, status: DocumentStatus, rejectionReason?: string) => {
+    const currentDocs = selectedLead.documentsList || [];
+    const doc = currentDocs.find(d => d.id === docId);
+    if (!doc) return;
+
+    const updatedDocs = currentDocs.map((d: LeadAttachedDocument) =>
+      d.id === docId
+        ? { ...d, status, rejectionReason: status === 'rejeitado' ? rejectionReason : undefined, reviewedAt: new Date().toISOString(), reviewedBy: currentUser.name || settings.brokerName }
+        : d
+    );
+
+    const timelineEntry: LeadTimelineEvent = {
+      id: `h_${Date.now()}`,
+      leadId: selectedLead.id,
+      type: 'note',
+      description: status === 'aprovado'
+        ? `Documento aprovado: ${doc.label}`
+        : status === 'rejeitado'
+        ? `Documento reprovado: ${doc.label}${rejectionReason ? ` — ${rejectionReason}` : ''}`
+        : status === 'em_analise'
+        ? `Documento em análise: ${doc.label}`
+        : `Documento marcado como ${DOC_STATUS_LABELS[status].toLowerCase()}: ${doc.label}`,
+      date: new Date().toISOString(),
+      author: currentUser.name || settings.brokerName
     };
 
-    const currentDocs = selectedLead.documentsList || [];
-    const filtered = currentDocs.filter(d => !(d.category === category && d.buyerType === newDoc.buyerType));
     updateLead(selectedLead.id, {
-      documentsList: [...filtered, newDoc]
+      documentsList: updatedDocs,
+      history: [timelineEntry, ...(selectedLead.history || [])]
     });
-    showToast(`Documento (${newDoc.label}) anexado com sucesso!`);
+    showToast(`Documento marcado como "${DOC_STATUS_LABELS[status]}".`);
+  };
+
+  const handleRejectDocument = (docId: string) => {
+    const reason = prompt('Motivo da reprovação (opcional):') || undefined;
+    handleSetDocumentStatus(docId, 'rejeitado', reason);
+  };
+
+  const handleDeleteDocument = (docId: string) => {
+    const currentDocs = selectedLead.documentsList || [];
+    const removedDoc = currentDocs.find(d => d.id === docId);
+    const timelineEntry: LeadTimelineEvent = {
+      id: `h_${Date.now()}`,
+      leadId: selectedLead.id,
+      type: 'note',
+      description: `Documento removido: ${removedDoc?.label || 'documento'}`,
+      date: new Date().toISOString(),
+      author: currentUser.name || settings.brokerName
+    };
+    updateLead(selectedLead.id, {
+      documentsList: currentDocs.filter(d => d.id !== docId),
+      history: [timelineEntry, ...(selectedLead.history || [])]
+    });
+    showToast('Documento removido.');
+  };
+
+  const MAX_CONTRACT_FILE_SIZE = 25 * 1024 * 1024; // 25MB — signed contracts can run many pages; matches backend Storage limit
+
+  const handleUploadSignedContract = () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.pdf,application/pdf';
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+
+      if (file.size > MAX_CONTRACT_FILE_SIZE) {
+        showToast(`Arquivo muito grande (${(file.size / (1024 * 1024)).toFixed(1)} MB). O limite é 25 MB.`);
+        return;
+      }
+
+      showToast('Enviando contrato...');
+      try {
+        const base64 = await readFileAsBase64(file);
+        const uploaded = await crmApi.uploadFile(file.name, file.type, base64);
+
+        const currentDetails = selectedLead.contractDetails || {};
+        const timelineEntry: LeadTimelineEvent = {
+          id: `h_${Date.now()}`,
+          leadId: selectedLead.id,
+          type: 'note',
+          description: `Contrato assinado anexado: ${file.name}`,
+          date: new Date().toISOString(),
+          author: currentUser.name || settings.brokerName
+        };
+        updateLead(selectedLead.id, {
+          contractDetails: {
+            ...currentDetails,
+            signedContractFile: {
+              name: file.name,
+              size: `${(uploaded.size / (1024 * 1024)).toFixed(1)} MB`,
+              date: new Date().toISOString(),
+              url: uploaded.url
+            }
+          },
+          history: [timelineEntry, ...(selectedLead.history || [])]
+        });
+        showToast('Contrato assinado anexado com sucesso!');
+      } catch (err: any) {
+        showToast(err?.message || 'Falha ao enviar contrato.');
+      }
+    };
+    input.click();
+  };
+
+  const handleDeleteSignedContract = () => {
+    const currentDetails = selectedLead.contractDetails || {};
+    updateLead(selectedLead.id, {
+      contractDetails: { ...currentDetails, signedContractFile: undefined }
+    });
+    showToast('Contrato assinado removido.');
+  };
+
+  const handleUploadOtherAttachment = () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+
+      if (file.size > MAX_CONTRACT_FILE_SIZE) {
+        showToast(`Arquivo muito grande (${(file.size / (1024 * 1024)).toFixed(1)} MB). O limite é 25 MB.`);
+        return;
+      }
+
+      showToast('Enviando anexo...');
+      try {
+        const base64 = await readFileAsBase64(file);
+        const uploaded = await crmApi.uploadFile(file.name, file.type, base64);
+
+        const currentDetails = selectedLead.contractDetails || {};
+        const currentAttachments = currentDetails.otherAttachments || [];
+        const timelineEntry: LeadTimelineEvent = {
+          id: `h_${Date.now()}`,
+          leadId: selectedLead.id,
+          type: 'note',
+          description: `Anexo adicionado: ${file.name}`,
+          date: new Date().toISOString(),
+          author: currentUser.name || settings.brokerName
+        };
+        updateLead(selectedLead.id, {
+          contractDetails: {
+            ...currentDetails,
+            otherAttachments: [
+              ...currentAttachments,
+              {
+                name: file.name,
+                size: `${(uploaded.size / (1024 * 1024)).toFixed(1)} MB`,
+                date: new Date().toISOString(),
+                url: uploaded.url
+              }
+            ]
+          },
+          history: [timelineEntry, ...(selectedLead.history || [])]
+        });
+        showToast('Anexo adicionado com sucesso!');
+      } catch (err: any) {
+        showToast(err?.message || 'Falha ao enviar anexo.');
+      }
+    };
+    input.click();
+  };
+
+  const handleDeleteOtherAttachment = (index: number) => {
+    const currentDetails = selectedLead.contractDetails || {};
+    const currentAttachments = currentDetails.otherAttachments || [];
+    updateLead(selectedLead.id, {
+      contractDetails: {
+        ...currentDetails,
+        otherAttachments: currentAttachments.filter((_: unknown, i: number) => i !== index)
+      }
+    });
+    showToast('Anexo removido.');
+  };
+
+  const handleDownloadAttachment = (file: { name: string; url?: string }) => {
+    if (!file.url) return;
+    downloadFileFromUrl(file.url, file.name);
   };
 
   // Checklist counts
   const currentLeadDocs = selectedLead.documentsList || [];
+  const currentTabBuyerType = docBuyerTab === 'conjuge' ? 'conjuge' : 'principal';
+  const tabDocs = currentLeadDocs.filter(d => d.buyerType === currentTabBuyerType);
+  const getTabDoc = (category: 'rg_cnh' | 'comprovante_endereco' | 'certidao_estado_civil' | 'declaracao_renda') =>
+    tabDocs.find(d => d.category === category);
   const requiredCategories = ['rg_cnh', 'comprovante_endereco', 'certidao_estado_civil'];
-  const uploadedRequired = currentLeadDocs.filter(d => requiredCategories.includes(d.category) && d.buyerType === 'principal');
-  const pendingCount = Math.max(0, 3 - uploadedRequired.length);
+  const approvedRequired = tabDocs.filter(d => requiredCategories.includes(d.category) && d.status === 'aprovado');
+  const pendingCount = Math.max(0, 3 - approvedRequired.length);
+
+  // Pending count for the main buyer specifically — used by the Lead Summary
+  // and Next Best Action, independent of which buyer tab is open in Documentos.
+  const principalDocs = currentLeadDocs.filter((d: LeadAttachedDocument) => d.buyerType === 'principal');
+  const principalPendingCount = Math.max(0, 3 - principalDocs.filter((d: LeadAttachedDocument) => requiredCategories.includes(d.category) && d.status === 'aprovado').length);
+
+  // --- Next Best Action: rule-based suggestion for what the broker should do next ---
+  // Scoring lives in a shared util (also used by the WhatsApp composer to
+  // pre-select an objective); this wraps it with this screen's own actions.
+  const nbaResult = computeNextBestAction(selectedLead, leadActivities);
+  const nextBestAction = nbaResult && {
+    ...nbaResult,
+    actionLabel:
+      nbaResult.objective === 'coleta_documentos' ? 'Enviar WhatsApp' :
+      nbaResult.title === 'Fazer primeiro contato' ? 'Enviar WhatsApp' :
+      nbaResult.title === 'Sem pendências identificadas' ? 'Agendar follow-up' :
+      'Ver em Atividades',
+    onAction:
+      nbaResult.objective === 'coleta_documentos' ? handleWhatsAppChargePendingDocs :
+      nbaResult.title === 'Fazer primeiro contato' ? () => openWhatsAppForLead(selectedLead, 'scripts') :
+      nbaResult.title === 'Sem pendências identificadas' ? () => setActiveTab('atividades') :
+      () => setActiveTab('atividades')
+  };
+
+  // Lead Health Score — a fresh lead (created <2 days ago) with no
+  // interaction yet hasn't had a chance to earn points; show it as
+  // "not yet evaluated" instead of a misleading 0/100 "Em risco".
+  const leadHealth = computeLeadHealthScore(selectedLead);
+  const leadAgeMs = Date.now() - Date.parse(selectedLead.createdAt);
+  const isTooNewToScore = leadHealth.score === 0 && leadAgeMs < 2 * 24 * 60 * 60 * 1000;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
+    <div className="fixed inset-0 z-50 flex items-center justify-center sm:p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
       <div
-        className="bg-white rounded-2xl w-full max-w-7xl max-h-[96vh] shadow-2xl border border-[#EAE7E2] flex flex-col overflow-hidden text-[#3A403A]"
+        className="bg-white w-full h-full sm:h-auto sm:max-w-7xl sm:max-h-[96vh] rounded-none sm:rounded-2xl shadow-2xl border-0 sm:border border-[#EAE7E2] flex flex-col overflow-hidden text-[#3A403A]"
         onClick={e => e.stopPropagation()}
       >
         {/* Toast alert */}
@@ -621,13 +1041,32 @@ export const LeadDetailModal: React.FC = () => {
                 </span>
                 <span className="text-slate-300">•</span>
                 <span className="flex items-center gap-1 text-slate-700">
-                  <Mail className="w-3.5 h-3.5 text-slate-400" /> {email || selectedLead.email || 'thalleshcmartins@gmail.com'}
+                  <Mail className="w-3.5 h-3.5 text-slate-400" /> {email || selectedLead.email || 'sem e-mail'}
                 </span>
                 <span className="text-slate-300">•</span>
                 <span>Origem: <strong className="text-slate-700">{origin}</strong></span>
                 <span className="text-slate-300">•</span>
-                <span>Último contato: <strong className="text-slate-700">{lastContactDate} · {lastContactAttempts} tentativa(s)</strong></span>
+                <span>Último contato: <strong className="text-slate-700">{lastContactDate ? `${lastContactDate} · ${lastContactAttempts} tentativa(s)` : 'Nenhum contato registrado'}</strong></span>
               </div>
+
+              {otherClientLeads.length > 0 && (
+                <div className="mt-2 flex items-center gap-2 flex-wrap">
+                  <span className="flex items-center gap-1.5 px-2.5 py-1 bg-sky-50 text-sky-800 border border-sky-200 rounded-full text-[11px] font-semibold">
+                    <History className="w-3 h-3" />
+                    {otherClientLeads.length === 1 ? '1 negociação anterior' : `${otherClientLeads.length} negociações anteriores`} deste cliente
+                  </span>
+                  {otherClientLeads.slice(0, 3).map(l => (
+                    <button
+                      key={l.id}
+                      onClick={() => setSelectedLead(l)}
+                      className="px-2.5 py-1 bg-white hover:bg-[#F4F1EA] border border-[#EAE7E2] rounded-full text-[11px] text-slate-600 hover:text-[#344E41] transition"
+                      title={`Ver negociação: ${l.propertyInterest}`}
+                    >
+                      {l.propertyInterest || l.stageId} {l.status === 'ganho' ? '· Ganho' : l.status === 'perdido' ? '· Perdido' : ''}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* Right Action Buttons */}
@@ -735,7 +1174,7 @@ export const LeadDetailModal: React.FC = () => {
                 <option value="Proposta enviada">Proposta enviada</option>
               </select>
 
-              {/* WhatsApp Button */}
+              {/* --- CENTRAL DE AÇÕES: ações primárias --- */}
               <button
                 onClick={() => openWhatsAppForLead(selectedLead, 'scripts')}
                 className="px-3 py-1.5 bg-[#F4F1EA] hover:bg-[#EAE7E2] text-[#344E41] text-xs font-semibold rounded-xl border border-[#EAE7E2] transition flex items-center gap-1.5 shadow-2xs"
@@ -744,50 +1183,91 @@ export const LeadDetailModal: React.FC = () => {
                 <span>WhatsApp</span>
               </button>
 
-              {/* Modelos Button */}
               <button
-                onClick={() => openWhatsAppForLead(selectedLead, 'scripts')}
-                className="px-3 py-1.5 bg-[#F4F1EA] hover:bg-[#EAE7E2] text-[#344E41] text-xs font-semibold rounded-xl border border-[#EAE7E2] transition shadow-2xs"
+                onClick={() => window.open(`tel:${(phone || selectedLead.phone).replace(/\D/g, '')}`, '_self')}
+                className="px-3 py-1.5 bg-[#F4F1EA] hover:bg-[#EAE7E2] text-[#344E41] text-xs font-semibold rounded-xl border border-[#EAE7E2] transition flex items-center gap-1.5 shadow-2xs"
               >
-                Modelos
+                <PhoneCall className="w-3.5 h-3.5 text-[#344E41]" />
+                <span>Ligar</span>
               </button>
 
-              {/* PDF Proposta Button */}
               <button
-                onClick={() => setShowProposalPdf(true)}
-                className="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-800 text-xs font-semibold rounded-xl border border-slate-300 transition flex items-center gap-1.5 shadow-2xs"
+                onClick={() => setActiveTab('atividades')}
+                className="px-3 py-1.5 bg-[#F4F1EA] hover:bg-[#EAE7E2] text-[#344E41] text-xs font-semibold rounded-xl border border-[#EAE7E2] transition flex items-center gap-1.5 shadow-2xs"
               >
-                <FileText className="w-3.5 h-3.5 text-slate-600" />
-                <span>PDF Proposta</span>
+                <Calendar className="w-3.5 h-3.5 text-[#344E41]" />
+                <span>Agendar atividade</span>
               </button>
 
-              {/* Dossiê do contrato Button */}
-              <button
-                onClick={() => setShowDossier(true)}
-                className="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-800 text-xs font-semibold rounded-xl border border-slate-300 transition flex items-center gap-1.5 shadow-2xs"
-              >
-                <Download className="w-3.5 h-3.5 text-slate-600" />
-                <span>Dossiê do contrato</span>
-              </button>
+              {(() => {
+                const currentIdx = STAGES.findIndex(s => s.id === selectedLead.stageId);
+                const nextStage = currentIdx >= 0 && currentIdx < STAGES.length - 1 ? STAGES[currentIdx + 1] : null;
+                if (!nextStage || selectedLead.status !== 'ativo') return null;
+                return (
+                  <button
+                    onClick={() => moveLeadStage(selectedLead.id, nextStage.id)}
+                    className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold rounded-xl transition flex items-center gap-1.5 shadow-2xs"
+                    title={`Avançar para: ${nextStage.name}`}
+                  >
+                    <ChevronRight className="w-3.5 h-3.5" />
+                    <span>Avançar etapa</span>
+                  </button>
+                );
+              })()}
 
-              {/* Emitir Nota Fiscal Button */}
-              <button
-                onClick={() => setShowInvoice(true)}
-                className="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-800 text-xs font-semibold rounded-xl border border-slate-300 transition flex items-center gap-1.5 shadow-2xs"
-              >
-                <Receipt className="w-3.5 h-3.5 text-slate-600" />
-                <span>Emitir Nota Fiscal</span>
-              </button>
-
-              {/* Excluir Button */}
-              <button
-                onClick={handleDeleteLead}
-                className="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-semibold rounded-xl border border-rose-200 transition flex items-center gap-1 shadow-2xs"
-                title="Excluir Lead"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                <span>Excluir</span>
-              </button>
+              {/* --- CENTRAL DE AÇÕES: menu secundário --- */}
+              <div className="relative">
+                <button
+                  onClick={() => setShowMoreActions((v: boolean) => !v)}
+                  className="p-2 bg-white hover:bg-slate-50 text-slate-600 rounded-xl border border-slate-300 transition shadow-2xs"
+                  title="Mais ações"
+                >
+                  <MoreHorizontal className="w-4 h-4" />
+                </button>
+                {showMoreActions && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setShowMoreActions(false)} />
+                    <div className="absolute right-0 top-full mt-1 z-50 w-52 bg-white border border-slate-200 rounded-xl shadow-lg overflow-hidden py-1">
+                      <button
+                        onClick={() => { openWhatsAppForLead(selectedLead, 'scripts'); setShowMoreActions(false); }}
+                        className="w-full text-left px-3.5 py-2 text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-2"
+                      >
+                        <MessageSquare className="w-3.5 h-3.5 text-slate-400" />
+                        <span>Modelos de mensagem</span>
+                      </button>
+                      <button
+                        onClick={() => { setShowProposalPdf(true); setShowMoreActions(false); }}
+                        className="w-full text-left px-3.5 py-2 text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-2"
+                      >
+                        <FileText className="w-3.5 h-3.5 text-slate-400" />
+                        <span>Gerar PDF Proposta</span>
+                      </button>
+                      <button
+                        onClick={() => { setShowAutoRegisterModal(true); setShowMoreActions(false); }}
+                        className="w-full text-left px-3.5 py-2 text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-2"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5 text-slate-400" />
+                        <span>Portal do cliente</span>
+                      </button>
+                      <button
+                        onClick={() => { setShowDossier(true); setShowMoreActions(false); }}
+                        className="w-full text-left px-3.5 py-2 text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-2"
+                      >
+                        <Download className="w-3.5 h-3.5 text-slate-400" />
+                        <span>Dossiê do contrato</span>
+                      </button>
+                      <div className="my-1 border-t border-slate-100" />
+                      <button
+                        onClick={() => { setShowMoreActions(false); handleDeleteLead(); }}
+                        className="w-full text-left px-3.5 py-2 text-xs text-rose-600 hover:bg-rose-50 flex items-center gap-2"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Excluir lead</span>
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
           </div>
 
@@ -815,6 +1295,96 @@ export const LeadDetailModal: React.FC = () => {
               );
             })}
           </div>
+        </div>
+
+        {/* --- LEAD SUMMARY + NEXT BEST ACTION --- */}
+        <div className="px-6 pt-4 pb-2 bg-[#FDFCFB] border-b border-[#EAE7E2] grid grid-cols-1 lg:grid-cols-3 gap-4">
+          {/* Resumo da negociação */}
+          <div className="lg:col-span-2 p-4 bg-white rounded-2xl border border-slate-200 shadow-2xs">
+            <h4 className="font-bold text-[10px] uppercase tracking-widest text-slate-500 mb-3">Resumo da negociação</h4>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-2.5 text-xs">
+              <div>
+                <span className="text-slate-400 block">Imóvel</span>
+                <strong className="text-slate-900">{propEnterprise || selectedLead.propertyInterest || '—'}</strong>
+              </div>
+              <div>
+                <span className="text-slate-400 block">Valor</span>
+                <strong className="text-slate-900">{estimatedValue ? formatCurrency(estimatedValue) : '—'}</strong>
+              </div>
+              <div>
+                <span className="text-slate-400 block">Entrada</span>
+                <strong className="text-slate-900">{downPayment ? formatCurrency(downPayment) : '—'}</strong>
+              </div>
+              <div>
+                <span className="text-slate-400 block">Pagamento</span>
+                <strong className="text-slate-900">{paymentMethod || '—'}</strong>
+              </div>
+              <div>
+                <span className="text-slate-400 block">Temperatura</span>
+                <strong className="text-slate-900 capitalize">{temperature}</strong>
+              </div>
+              <div>
+                <span className="text-slate-400 block">Documentação</span>
+                <strong className={principalPendingCount > 0 ? 'text-amber-700' : 'text-emerald-700'}>
+                  {principalPendingCount > 0 ? `${3 - principalPendingCount}/3 concluídos` : '3/3 concluídos'}
+                </strong>
+              </div>
+              <div>
+                <span className="text-slate-400 block">Etapa</span>
+                <strong className="text-slate-900">{STAGES.find(s => s.id === selectedLead.stageId)?.name || '—'}</strong>
+              </div>
+              <div>
+                <span className="text-slate-400 block">Último contato</span>
+                <strong className="text-slate-900">{lastContactDate || 'Nenhum'}</strong>
+              </div>
+              <div>
+                <span className="text-slate-400 block">Lead Health</span>
+                {isTooNewToScore ? (
+                  <strong className="text-slate-500 font-medium">Aguardando dados</strong>
+                ) : (
+                  <div
+                    title={leadHealth.breakdown.map(b => `${b.label}: ${b.points > 0 ? '+' : ''}${b.points}`).join(' · ') || 'Sem sinais registrados ainda'}
+                  >
+                    <strong className={leadHealth.tier === 'saudavel' ? 'text-emerald-700' : leadHealth.tier === 'atencao' ? 'text-amber-700' : 'text-rose-700'}>
+                      {leadHealth.score}/100 {LEAD_HEALTH_TIER_EMOJI[leadHealth.tier]}
+                    </strong>
+                    <span className="text-[10px] text-slate-400 block">{LEAD_HEALTH_TIER_LABELS[leadHealth.tier]}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Próxima ação (Next Best Action) */}
+          {nextBestAction ? (
+            <div className={`p-4 rounded-2xl border shadow-2xs flex flex-col justify-between gap-3 ${
+              nextBestAction.level === 'high' ? 'bg-rose-50 border-rose-200' :
+              nextBestAction.level === 'medium' ? 'bg-amber-50 border-amber-200' :
+              'bg-emerald-50 border-emerald-200'
+            }`}>
+              <div>
+                <div className="flex items-center gap-1.5 mb-1">
+                  <span>{nextBestAction.level === 'high' ? '🔴' : nextBestAction.level === 'medium' ? '🟡' : '🟢'}</span>
+                  <h4 className="font-bold text-xs text-slate-900">{nextBestAction.title}</h4>
+                </div>
+                <p className="text-[11px] text-slate-600 leading-relaxed">{nextBestAction.description}</p>
+              </div>
+              <button
+                onClick={nextBestAction.onAction}
+                className={`self-start px-3 py-1.5 text-xs font-bold rounded-xl shadow-2xs transition ${
+                  nextBestAction.level === 'high' ? 'bg-rose-600 hover:bg-rose-700 text-white' :
+                  nextBestAction.level === 'medium' ? 'bg-amber-600 hover:bg-amber-700 text-white' :
+                  'bg-emerald-600 hover:bg-emerald-700 text-white'
+                }`}
+              >
+                {nextBestAction.actionLabel}
+              </button>
+            </div>
+          ) : (
+            <div className="p-4 rounded-2xl border border-slate-200 bg-slate-50 flex items-center justify-center text-xs text-slate-500 text-center">
+              {selectedLead.status === 'ganho' ? '🏆 Negociação concluída com sucesso.' : 'Negociação encerrada.'}
+            </div>
+          )}
         </div>
 
         {/* --- MAIN TABS BAR --- */}
@@ -924,7 +1494,7 @@ export const LeadDetailModal: React.FC = () => {
                         type="email"
                         value={email}
                         onChange={e => setEmail(e.target.value)}
-                        placeholder="thalleshcmartins@gmail.com"
+                        placeholder="email@exemplo.com"
                         className="w-full text-xs p-3 bg-white border border-[#EAE7E2] rounded-xl text-slate-800 focus:outline-none focus:border-slate-900 shadow-2xs"
                       />
                     </div>
@@ -1678,13 +2248,19 @@ export const LeadDetailModal: React.FC = () => {
                 {/* Badges */}
                 <div className="flex items-center gap-6 pt-2 text-xs flex-wrap">
                   <div className="flex items-center gap-1.5 text-amber-900 font-medium">
-                    <span className="text-amber-700 font-bold">✕</span> RG ou CNH
+                    <span className={`font-bold ${getTabDoc('rg_cnh')?.status === 'aprovado' ? 'text-emerald-600' : 'text-amber-700'}`}>
+                      {getTabDoc('rg_cnh')?.status === 'aprovado' ? '✓' : '✕'}
+                    </span> RG ou CNH
                   </div>
                   <div className="flex items-center gap-1.5 text-amber-900 font-medium">
-                    <span className="text-amber-700 font-bold">✕</span> Comprovante de Endereço
+                    <span className={`font-bold ${getTabDoc('comprovante_endereco')?.status === 'aprovado' ? 'text-emerald-600' : 'text-amber-700'}`}>
+                      {getTabDoc('comprovante_endereco')?.status === 'aprovado' ? '✓' : '✕'}
+                    </span> Comprovante de Endereço
                   </div>
                   <div className="flex items-center gap-1.5 text-amber-900 font-medium">
-                    <span className="text-amber-700 font-bold">✕</span> Certidão de Estado Civil
+                    <span className={`font-bold ${getTabDoc('certidao_estado_civil')?.status === 'aprovado' ? 'text-emerald-600' : 'text-amber-700'}`}>
+                      {getTabDoc('certidao_estado_civil')?.status === 'aprovado' ? '✓' : '✕'}
+                    </span> Certidão de Estado Civil
                   </div>
                 </div>
               </div>
@@ -1695,14 +2271,16 @@ export const LeadDetailModal: React.FC = () => {
                 <div className="p-4 bg-white rounded-2xl border border-slate-200 shadow-2xs flex items-center justify-between">
                   <div>
                     <h5 className="font-bold text-xs text-slate-900">RG ou CNH</h5>
-                    <span className="text-[11px] text-slate-400">Pendente</span>
+                    <span className={`text-[11px] font-semibold px-1.5 py-0.5 rounded ${getTabDoc('rg_cnh') ? DOC_STATUS_CLASSES[getTabDoc('rg_cnh')!.status] : 'text-slate-400'}`}>
+                      {getTabDoc('rg_cnh') ? DOC_STATUS_LABELS[getTabDoc('rg_cnh')!.status] : 'Pendente'}
+                    </span>
                   </div>
                   <button
                     onClick={() => handleUploadDocument('rg_cnh')}
                     className="flex items-center gap-1.5 px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-semibold shadow transition"
                   >
                     <UploadCloud className="w-3.5 h-3.5" />
-                    <span>Enviar</span>
+                    <span>{getTabDoc('rg_cnh') ? 'Reenviar' : 'Enviar'}</span>
                   </button>
                 </div>
 
@@ -1710,14 +2288,16 @@ export const LeadDetailModal: React.FC = () => {
                 <div className="p-4 bg-white rounded-2xl border border-slate-200 shadow-2xs flex items-center justify-between">
                   <div>
                     <h5 className="font-bold text-xs text-slate-900">Comprovante de Endereço</h5>
-                    <span className="text-[11px] text-slate-400">Pendente</span>
+                    <span className={`text-[11px] font-semibold px-1.5 py-0.5 rounded ${getTabDoc('comprovante_endereco') ? DOC_STATUS_CLASSES[getTabDoc('comprovante_endereco')!.status] : 'text-slate-400'}`}>
+                      {getTabDoc('comprovante_endereco') ? DOC_STATUS_LABELS[getTabDoc('comprovante_endereco')!.status] : 'Pendente'}
+                    </span>
                   </div>
                   <button
                     onClick={() => handleUploadDocument('comprovante_endereco')}
                     className="flex items-center gap-1.5 px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-semibold shadow transition"
                   >
                     <UploadCloud className="w-3.5 h-3.5" />
-                    <span>Enviar</span>
+                    <span>{getTabDoc('comprovante_endereco') ? 'Reenviar' : 'Enviar'}</span>
                   </button>
                 </div>
 
@@ -1725,14 +2305,16 @@ export const LeadDetailModal: React.FC = () => {
                 <div className="p-4 bg-white rounded-2xl border border-slate-200 shadow-2xs flex items-center justify-between">
                   <div>
                     <h5 className="font-bold text-xs text-slate-900">Certidão de Estado Civil</h5>
-                    <span className="text-[11px] text-slate-400">Pendente</span>
+                    <span className={`text-[11px] font-semibold px-1.5 py-0.5 rounded ${getTabDoc('certidao_estado_civil') ? DOC_STATUS_CLASSES[getTabDoc('certidao_estado_civil')!.status] : 'text-slate-400'}`}>
+                      {getTabDoc('certidao_estado_civil') ? DOC_STATUS_LABELS[getTabDoc('certidao_estado_civil')!.status] : 'Pendente'}
+                    </span>
                   </div>
                   <button
                     onClick={() => handleUploadDocument('certidao_estado_civil')}
                     className="flex items-center gap-1.5 px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-semibold shadow transition"
                   >
                     <UploadCloud className="w-3.5 h-3.5" />
-                    <span>Enviar</span>
+                    <span>{getTabDoc('certidao_estado_civil') ? 'Reenviar' : 'Enviar'}</span>
                   </button>
                 </div>
 
@@ -1742,44 +2324,97 @@ export const LeadDetailModal: React.FC = () => {
                     <h5 className="font-bold text-xs text-slate-900">
                       Declaração de Renda <span className="text-slate-400 font-normal">(opcional)</span>
                     </h5>
-                    <span className="text-[11px] text-slate-400">Pendente</span>
+                    <span className={`text-[11px] font-semibold px-1.5 py-0.5 rounded ${getTabDoc('declaracao_renda') ? DOC_STATUS_CLASSES[getTabDoc('declaracao_renda')!.status] : 'text-slate-400'}`}>
+                      {getTabDoc('declaracao_renda') ? DOC_STATUS_LABELS[getTabDoc('declaracao_renda')!.status] : 'Pendente'}
+                    </span>
                   </div>
                   <button
                     onClick={() => handleUploadDocument('declaracao_renda')}
                     className="flex items-center gap-1.5 px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-semibold shadow transition"
                   >
                     <UploadCloud className="w-3.5 h-3.5" />
-                    <span>Enviar</span>
+                    <span>{getTabDoc('declaracao_renda') ? 'Reenviar' : 'Enviar'}</span>
                   </button>
                 </div>
               </div>
 
               {/* Uploaded Documents List */}
-              {currentLeadDocs.length > 0 && (
+              {tabDocs.length > 0 && (
                 <div className="space-y-3 pt-4 border-t border-slate-200">
                   <h4 className="font-bold text-xs uppercase tracking-widest text-slate-800">
-                    Documentos Enviados ({currentLeadDocs.length})
+                    Documentos Enviados ({tabDocs.length})
                   </h4>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    {currentLeadDocs.map((doc, idx) => (
-                      <div key={doc.id || idx} className="p-3 bg-white rounded-xl border border-slate-200 flex items-center justify-between">
-                        <div className="flex items-center gap-2.5 overflow-hidden">
+                  <div className="space-y-2">
+                    {tabDocs.map((doc, idx) => (
+                      <div key={doc.id || idx} className="p-3 bg-white rounded-xl border border-slate-200 flex items-center justify-between gap-3 flex-wrap">
+                        <div className="flex items-center gap-2.5 overflow-hidden min-w-0">
                           <FileCheck className="w-4 h-4 text-emerald-600 shrink-0" />
                           <div className="truncate text-xs">
-                            <strong className="text-slate-900 block truncate">{doc.label}</strong>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <strong className="text-slate-900 truncate">{doc.label}</strong>
+                              <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded shrink-0 ${DOC_STATUS_CLASSES[doc.status]}`}>
+                                {DOC_STATUS_LABELS[doc.status]}
+                              </span>
+                            </div>
                             <span className="text-[10px] text-slate-400">{doc.fileName} • {doc.fileSize}</span>
+                            {doc.status === 'rejeitado' && doc.rejectionReason && (
+                              <span className="text-[10px] text-rose-600 block mt-0.5">Motivo: {doc.rejectionReason}</span>
+                            )}
                           </div>
                         </div>
-                        <div className="flex items-center gap-1">
+                        <div className="flex items-center gap-1 shrink-0">
+                          {(doc.status === 'enviado' || doc.status === 'em_analise') && (
+                            <>
+                              <button
+                                onClick={() => handleSetDocumentStatus(doc.id, 'aprovado')}
+                                className="px-2.5 py-1.5 text-[11px] font-semibold text-emerald-700 hover:bg-emerald-50 rounded-lg border border-emerald-200"
+                                title="Aprovar documento"
+                              >
+                                Aprovar
+                              </button>
+                              <button
+                                onClick={() => handleRejectDocument(doc.id)}
+                                className="px-2.5 py-1.5 text-[11px] font-semibold text-rose-700 hover:bg-rose-50 rounded-lg border border-rose-200"
+                                title="Reprovar documento"
+                              >
+                                Reprovar
+                              </button>
+                              {doc.status === 'enviado' && (
+                                <button
+                                  onClick={() => handleSetDocumentStatus(doc.id, 'em_analise')}
+                                  className="px-2.5 py-1.5 text-[11px] font-semibold text-blue-700 hover:bg-blue-50 rounded-lg border border-blue-200"
+                                  title="Marcar como em análise"
+                                >
+                                  Em análise
+                                </button>
+                              )}
+                            </>
+                          )}
                           {doc.fileDataUrl && (
                             <button
-                              onClick={() => setSelectedDocPreview({ title: doc.label, url: doc.fileDataUrl! })}
+                              onClick={() => setSelectedDocPreview({ title: doc.label, url: doc.fileDataUrl!, fileName: doc.fileName || doc.label })}
                               className="p-1.5 text-slate-600 hover:text-slate-900 rounded-lg hover:bg-slate-100"
                               title="Visualizar"
                             >
                               <Eye className="w-4 h-4" />
                             </button>
                           )}
+                          {doc.fileDataUrl && (
+                            <button
+                              onClick={() => handleDownloadDocument(doc)}
+                              className="p-1.5 text-slate-600 hover:text-slate-900 rounded-lg hover:bg-slate-100"
+                              title="Baixar"
+                            >
+                              <Download className="w-4 h-4" />
+                            </button>
+                          )}
+                          <button
+                            onClick={() => handleDeleteDocument(doc.id)}
+                            className="p-1.5 text-rose-500 hover:text-rose-700 rounded-lg hover:bg-rose-50"
+                            title="Excluir"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
                         </div>
                       </div>
                     ))}
@@ -1810,133 +2445,105 @@ export const LeadDetailModal: React.FC = () => {
           {/* ========================================================== */}
           {activeTab === 'atividades' && (
             <div className="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-8">
-              {/* Left 2 Columns: Activity Timeline & List */}
+              {/* Left 2 Columns: Unified Timeline */}
               <div className="lg:col-span-2 space-y-4">
-                {/* Rendered Activities Timeline */}
                 <div className="space-y-4">
-                  {/* Mock Concluded WhatsApp Item 1 */}
-                  <div className="p-4 bg-white rounded-2xl border border-slate-200 shadow-2xs space-y-2">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <div className="w-7 h-7 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center">
-                          <MessageSquare className="w-3.5 h-3.5" />
-                        </div>
-                        <span className="font-bold text-xs text-slate-900">WhatsApp</span>
-                        <span className="text-[11px] text-slate-500">21/08/2026, 16:00</span>
-                        <span className="text-[10px] font-bold uppercase text-slate-600 bg-slate-100 px-2 py-0.5 rounded">
-                          CONCLUIDA
-                        </span>
-                      </div>
-
-                      <div className="flex items-center gap-2">
-                        <button className="text-xs font-semibold text-slate-600 hover:text-slate-900">
-                          Reabrir
-                        </button>
-                        <button className="text-rose-500 hover:text-rose-700 p-1">
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
+                  {timelineItems.length === 0 && (
+                    <div className="p-6 bg-white rounded-2xl border border-slate-200 shadow-2xs text-center text-xs text-slate-500">
+                      Nenhum evento registrado ainda.
                     </div>
+                  )}
+                  {timelineItems.map(item => {
+                    if (item.kind === 'activity') {
+                      const act = item.data;
+                      return (
+                        <div key={`act_${act.id}`} className="p-4 bg-white rounded-2xl border border-slate-200 shadow-2xs space-y-2">
+                          <div className="flex items-center justify-between flex-wrap gap-2">
+                            <div className="flex items-center gap-2">
+                              <div className="w-7 h-7 rounded-full bg-slate-100 text-slate-700 flex items-center justify-center capitalize">
+                                <Calendar className="w-3.5 h-3.5" />
+                              </div>
+                              <span className="font-bold text-xs text-slate-900 capitalize">{act.type}</span>
+                              <span className="text-[11px] text-slate-500">{formatDateTimePtBR(act.dateTime)}</span>
+                              <span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded ${
+                                act.completed ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                              }`}>
+                                {act.completed ? 'CONCLUÍDA' : 'PENDENTE'}
+                              </span>
+                            </div>
 
-                    <p className="text-xs text-slate-500 font-medium">
-                      Etapa: Lead Novo
-                    </p>
-
-                    <div className="p-3 bg-slate-50 rounded-xl text-xs text-slate-700 space-y-1.5 leading-relaxed font-sans">
-                      <p className="font-bold text-slate-800">Mensagem:</p>
-                      <p>Olá {name.split(' ')[0] || selectedLead.name.split(' ')[0]}, aqui é {currentUser.name || 'Thalles'} da {settings.companyName}. vi que você demonstrou interesse em um imóvel com a gente e quero te ajudar a encontrar o melhor negócio. 🏡</p>
-                      <p>Para já te enviar opções alinhadas, me conta rapidinho:</p>
-                      <p>• Você busca para *morar* ou *investir*?</p>
-                      <p>• Qual *região* prefere?</p>
-                      <p>• Tem uma *faixa de valor* em mente?</p>
-                      <p>Pode responder por aqui mesmo, {name.split(' ')[0] || selectedLead.name.split(' ')[0]}. Em poucos minutos eu te retorno com 2 ou 3 opções selecionadas. 🙌</p>
-                    </div>
-                  </div>
-
-                  {/* Mock Concluded WhatsApp Item 2 */}
-                  <div className="p-4 bg-white rounded-2xl border border-slate-200 shadow-2xs space-y-2">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <div className="w-7 h-7 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center">
-                          <MessageSquare className="w-3.5 h-3.5" />
-                        </div>
-                        <span className="font-bold text-xs text-slate-900">WhatsApp</span>
-                        <span className="text-[11px] text-slate-500">21/08/2026, 14:40</span>
-                        <span className="text-[10px] font-bold uppercase text-slate-600 bg-slate-100 px-2 py-0.5 rounded">
-                          CONCLUIDA
-                        </span>
-                      </div>
-
-                      <div className="flex items-center gap-2">
-                        <button className="text-xs font-semibold text-slate-600 hover:text-slate-900">
-                          Reabrir
-                        </button>
-                        <button className="text-rose-500 hover:text-rose-700 p-1">
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    </div>
-
-                    <p className="text-xs text-slate-500 font-medium">
-                      Etapa: Apresentação
-                    </p>
-
-                    <div className="p-3 bg-slate-50 rounded-xl text-xs text-slate-700 space-y-1.5 leading-relaxed font-sans">
-                      <p className="font-bold text-slate-800">Mensagem:</p>
-                      <p>Olá {name.split(' ')[0] || selectedLead.name.split(' ')[0]}, aqui é {currentUser.name || 'Thalles'} da {settings.companyName}. tudo bem? Quero te ajudar a encontrar o imóvel ideal. 🏡</p>
-                      <p>Me responde só 3 coisinhas para eu já te enviar opções:</p>
-                      <p>• *morar* ou *investir*?</p>
-                      <p>• *região* preferida?</p>
-                      <p>• *Faixa de valor*?</p>
-                      <p>Pode mandar por aqui mesmo, {name.split(' ')[0] || selectedLead.name.split(' ')[0]}. 🙌</p>
-                    </div>
-                  </div>
-
-                  {/* Custom Dynamic Activities */}
-                  {leadActivities.map(act => (
-                    <div key={act.id} className="p-4 bg-white rounded-2xl border border-slate-200 shadow-2xs space-y-2">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <div className="w-7 h-7 rounded-full bg-slate-100 text-slate-700 flex items-center justify-center capitalize">
-                            <Calendar className="w-3.5 h-3.5" />
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={() => toggleActivityComplete(act.id)}
+                                className="text-xs font-semibold text-slate-600 hover:text-slate-900"
+                              >
+                                {act.completed ? 'Reabrir' : 'Concluir'}
+                              </button>
+                              <button
+                                onClick={() => deleteActivity(act.id)}
+                                className="text-rose-500 hover:text-rose-700 p-1"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
                           </div>
-                          <span className="font-bold text-xs text-slate-900 capitalize">{act.type}</span>
-                          <span className="text-[11px] text-slate-500">{formatDateTimePtBR(act.dateTime)}</span>
-                          <span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded ${
-                            act.completed ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
-                          }`}>
-                            {act.completed ? 'CONCLUÍDA' : 'PENDENTE'}
-                          </span>
-                        </div>
 
+                          {act.notes && (
+                            <p className="text-xs text-slate-700 bg-slate-50 p-3 rounded-xl whitespace-pre-line">
+                              {act.notes}
+                            </p>
+                          )}
+                        </div>
+                      );
+                    }
+
+                    const h = item.data;
+                    const isStageChange = h.type === 'stage_change' || h.type === 'sale' || h.type === 'deal_won' || h.type === 'deal_lost';
+                    return (
+                      <div key={`hist_${h.id}`} className="p-4 bg-white rounded-2xl border border-slate-200 shadow-2xs space-y-1">
                         <div className="flex items-center gap-2">
-                          <button
-                            onClick={() => toggleActivityComplete(act.id)}
-                            className="text-xs font-semibold text-slate-600 hover:text-slate-900"
-                          >
-                            {act.completed ? 'Reabrir' : 'Concluir'}
-                          </button>
-                          <button
-                            onClick={() => deleteActivity(act.id)}
-                            className="text-rose-500 hover:text-rose-700 p-1"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
+                          <div className={`w-7 h-7 rounded-full flex items-center justify-center ${isStageChange ? 'bg-indigo-50 text-indigo-600' : 'bg-emerald-50 text-emerald-600'}`}>
+                            {isStageChange ? <ArrowLeft className="w-3.5 h-3.5 rotate-180" /> : <FileText className="w-3.5 h-3.5" />}
+                          </div>
+                          <span className="text-[11px] text-slate-500">{formatDateTimePtBR(h.date)}</span>
+                          {h.author && <span className="text-[11px] text-slate-400">• {h.author}</span>}
                         </div>
+                        <p className="text-xs text-slate-700 pl-9">{h.description}</p>
                       </div>
-
-                      {act.notes && (
-                        <p className="text-xs text-slate-700 bg-slate-50 p-3 rounded-xl whitespace-pre-line">
-                          {act.notes}
-                        </p>
-                      )}
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
 
               {/* Right Column: "Nova atividade" Form Card */}
               <div className="space-y-4">
+                {/* Quick Note Card */}
+                <div className="p-6 bg-white rounded-2xl border border-slate-200 shadow-2xs space-y-3">
+                  <h4 className="font-serif font-bold text-base text-slate-900">
+                    Registrar nota
+                  </h4>
+                  <p className="text-[11px] text-slate-500 -mt-2">
+                    Anota algo na linha do tempo sem criar uma atividade agendada.
+                  </p>
+                  <form onSubmit={handleAddQuickNote} className="space-y-3">
+                    <textarea
+                      rows={3}
+                      value={quickNote}
+                      onChange={e => setQuickNote(e.target.value)}
+                      placeholder="Ex: Cliente pediu para retornarmos na próxima semana."
+                      className="w-full text-xs p-3 bg-white border border-slate-200 rounded-xl text-slate-800 focus:outline-none focus:border-slate-900"
+                    />
+                    <button
+                      type="submit"
+                      disabled={!quickNote.trim()}
+                      className="w-full py-2.5 bg-white hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed text-slate-800 font-bold text-xs rounded-xl border border-slate-300 shadow-2xs transition flex items-center justify-center gap-1.5"
+                    >
+                      <Plus className="w-4 h-4" />
+                      <span>Registrar nota</span>
+                    </button>
+                  </form>
+                </div>
+
                 <div className="p-6 bg-white rounded-2xl border border-slate-200 shadow-2xs space-y-4">
                   <h4 className="font-serif font-bold text-base text-slate-900">
                     Nova atividade
@@ -2050,7 +2657,7 @@ export const LeadDetailModal: React.FC = () => {
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs">
                 <div>
                   <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500 block">EMPREENDIMENTO</span>
-                  <strong className="text-sm text-slate-900 block mt-0.5">{propEnterprise || selectedLead.propertyInterest || 'TESTE'}</strong>
+                  <strong className="text-sm text-slate-900 block mt-0.5">{propEnterprise || selectedLead.propertyInterest || '—'}</strong>
                 </div>
                 <div>
                   <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500 block">UNIDADE</span>
@@ -2385,7 +2992,7 @@ export const LeadDetailModal: React.FC = () => {
                   </label>
                 </div>
 
-                <div className="pt-2">
+                <div className="pt-2 flex items-center gap-3 flex-wrap">
                   <button
                     type="button"
                     onClick={handleSaveCommission}
@@ -2393,37 +3000,99 @@ export const LeadDetailModal: React.FC = () => {
                   >
                     Salvar comissão
                   </button>
+                  {selectedLead.contractDetails?.contractId ? (
+                    <span className="text-[11px] text-emerald-700 font-medium flex items-center gap-1">
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      Vinculado ao Contrato #{selectedLead.contractDetails.contractId.replace('cont-', '')} — visível em Contratos e Comissões
+                    </span>
+                  ) : (
+                    <span className="text-[11px] text-slate-400">
+                      Ao salvar, um contrato e as parcelas de comissão serão criados e ficarão visíveis em Contratos e Comissões.
+                    </span>
+                  )}
                 </div>
               </div>
 
               {/* Anexos de Contrato */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-6 border-t border-slate-200">
-                <div className="p-4 bg-white rounded-2xl border border-slate-200 shadow-2xs flex items-center justify-between">
-                  <div>
-                    <h5 className="font-bold text-xs text-slate-900">Contrato assinado</h5>
-                    <p className="text-[11px] text-slate-400">PDF do contrato principal</p>
+                <div className="p-4 bg-white rounded-2xl border border-slate-200 shadow-2xs space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h5 className="font-bold text-xs text-slate-900">Contrato assinado</h5>
+                      <p className="text-[11px] text-slate-400">PDF do contrato principal (até 25 MB)</p>
+                    </div>
+                    <button
+                      onClick={handleUploadSignedContract}
+                      className="flex items-center gap-1.5 px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-semibold transition shrink-0"
+                    >
+                      <Paperclip className="w-3.5 h-3.5" />
+                      <span>{selectedLead.contractDetails?.signedContractFile ? 'Reanexar' : 'Anexar'}</span>
+                    </button>
                   </div>
-                  <button
-                    onClick={() => showToast('Arquivo do contrato principal anexado!')}
-                    className="flex items-center gap-1.5 px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-semibold transition"
-                  >
-                    <Paperclip className="w-3.5 h-3.5" />
-                    <span>Anexar</span>
-                  </button>
+                  {selectedLead.contractDetails?.signedContractFile && (
+                    <div className="p-2.5 bg-slate-50 rounded-xl flex items-center justify-between gap-2">
+                      <div className="truncate text-xs">
+                        <strong className="text-slate-900 block truncate">{selectedLead.contractDetails.signedContractFile.name}</strong>
+                        <span className="text-[10px] text-slate-400">{selectedLead.contractDetails.signedContractFile.size}</span>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          onClick={() => handleDownloadAttachment(selectedLead.contractDetails!.signedContractFile!)}
+                          className="p-1.5 text-slate-600 hover:text-slate-900 rounded-lg hover:bg-slate-200"
+                          title="Baixar"
+                        >
+                          <Download className="w-4 h-4" />
+                        </button>
+                        <button
+                          onClick={handleDeleteSignedContract}
+                          className="p-1.5 text-rose-500 hover:text-rose-700 rounded-lg hover:bg-rose-50"
+                          title="Excluir"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
-                <div className="p-4 bg-white rounded-2xl border border-slate-200 shadow-2xs flex items-center justify-between">
-                  <div>
-                    <h5 className="font-bold text-xs text-slate-900">Outros anexos</h5>
-                    <p className="text-[11px] text-slate-400">Boletos, aditivos, distrato...</p>
+                <div className="p-4 bg-white rounded-2xl border border-slate-200 shadow-2xs space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h5 className="font-bold text-xs text-slate-900">Outros anexos</h5>
+                      <p className="text-[11px] text-slate-400">Boletos, aditivos, distrato... (até 25 MB cada)</p>
+                    </div>
+                    <button
+                      onClick={handleUploadOtherAttachment}
+                      className="flex items-center gap-1.5 px-4 py-2 bg-white border border-slate-300 hover:bg-slate-50 text-slate-800 rounded-xl text-xs font-semibold transition shadow-2xs shrink-0"
+                    >
+                      <UploadCloud className="w-3.5 h-3.5" />
+                      <span>Adicionar</span>
+                    </button>
                   </div>
-                  <button
-                    onClick={() => showToast('Novo anexo adicionado!')}
-                    className="flex items-center gap-1.5 px-4 py-2 bg-white border border-slate-300 hover:bg-slate-50 text-slate-800 rounded-xl text-xs font-semibold transition shadow-2xs"
-                  >
-                    <UploadCloud className="w-3.5 h-3.5" />
-                    <span>Adicionar</span>
-                  </button>
+                  {(selectedLead.contractDetails?.otherAttachments || []).map((file, idx) => (
+                    <div key={`${file.name}_${idx}`} className="p-2.5 bg-slate-50 rounded-xl flex items-center justify-between gap-2">
+                      <div className="truncate text-xs">
+                        <strong className="text-slate-900 block truncate">{file.name}</strong>
+                        <span className="text-[10px] text-slate-400">{file.size}</span>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          onClick={() => handleDownloadAttachment(file)}
+                          className="p-1.5 text-slate-600 hover:text-slate-900 rounded-lg hover:bg-slate-200"
+                          title="Baixar"
+                        >
+                          <Download className="w-4 h-4" />
+                        </button>
+                        <button
+                          onClick={() => handleDeleteOtherAttachment(idx)}
+                          className="p-1.5 text-rose-500 hover:text-rose-700 rounded-lg hover:bg-rose-50"
+                          title="Excluir"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
             </div>
@@ -2438,10 +3107,6 @@ export const LeadDetailModal: React.FC = () => {
 
       {showDossier && (
         <ContractDossierModal lead={selectedLead} onClose={() => setShowDossier(false)} />
-      )}
-
-      {showInvoice && (
-        <InvoiceModal lead={selectedLead} onClose={() => setShowInvoice(false)} />
       )}
 
       {/* MODAL: Link de auto-cadastro (Screenshot 1 exact design) */}
@@ -2606,25 +3271,45 @@ export const LeadDetailModal: React.FC = () => {
         </div>
       )}
 
-      {/* Document Image Preview Modal */}
-      {selectedDocPreview && (
+      {/* Document Preview Modal */}
+      {selectedDocPreview && (() => {
+        const isPdfPreview = /\.pdf($|\?)/i.test(selectedDocPreview.fileName) || selectedDocPreview.url.startsWith('data:application/pdf');
+        return (
         <div className="fixed inset-0 z-80 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl p-4 max-w-2xl w-full space-y-3 shadow-2xl">
-            <div className="flex items-center justify-between">
+          <div className={`bg-white rounded-2xl p-4 w-full space-y-3 shadow-2xl ${isPdfPreview ? 'max-w-4xl h-[90vh] flex flex-col' : 'max-w-2xl'}`}>
+            <div className="flex items-center justify-between shrink-0">
               <h4 className="font-bold text-sm text-slate-800">{selectedDocPreview.title}</h4>
-              <button
-                onClick={() => setSelectedDocPreview(null)}
-                className="p-1 text-slate-400 hover:text-slate-800"
-              >
-                ✕
-              </button>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => downloadFileFromUrl(selectedDocPreview.url, selectedDocPreview.fileName)}
+                  className="p-1.5 text-slate-500 hover:text-slate-900 rounded-lg hover:bg-slate-100"
+                  title="Baixar"
+                >
+                  <Download className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={() => setSelectedDocPreview(null)}
+                  className="p-1 text-slate-400 hover:text-slate-800"
+                >
+                  ✕
+                </button>
+              </div>
             </div>
-            <div className="max-h-[70vh] overflow-auto flex items-center justify-center bg-slate-50 p-2 rounded-xl">
-              <img src={selectedDocPreview.url} alt={selectedDocPreview.title} className="max-w-full rounded-lg object-contain" />
-            </div>
+            {isPdfPreview ? (
+              <iframe
+                src={selectedDocPreview.url}
+                title={selectedDocPreview.title}
+                className="flex-1 w-full rounded-lg border border-slate-200"
+              />
+            ) : (
+              <div className="max-h-[70vh] overflow-auto flex items-center justify-center bg-slate-50 p-2 rounded-xl">
+                <img src={selectedDocPreview.url} alt={selectedDocPreview.title} className="max-w-full rounded-lg object-contain" />
+              </div>
+            )}
           </div>
         </div>
-      )}
+        );
+      })()}
     </div>
   );
 };

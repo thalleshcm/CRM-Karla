@@ -22,6 +22,7 @@ import { useCrm } from '../context/CrmContext';
 import { Header } from './Header';
 import { Contract } from '../types';
 import { formatCurrency, formatDatePtBR } from '../utils/formatters';
+import { useEscapeToClose } from '../hooks/useEscapeToClose';
 
 export const ContractsView: React.FC = () => {
   const {
@@ -37,6 +38,8 @@ export const ContractsView: React.FC = () => {
   const [selectedContractForDetails, setSelectedContractForDetails] = useState<Contract | null>(null);
 
   const canViewAll = hasPermission('canViewAllLeads');
+
+  useEscapeToClose(() => setSelectedContractForDetails(null), !!selectedContractForDetails);
 
   const activeContracts = visibleContracts.filter(c => c.status !== 'excluido' && c.status !== 'cancelado');
   const completedContracts = visibleContracts.filter(c => c.status === 'concluido');

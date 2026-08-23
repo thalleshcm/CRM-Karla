@@ -18,6 +18,7 @@ import {
 import { useCrm } from '../context/CrmContext';
 import { ViewType } from '../types';
 import { formatCurrency } from '../utils/formatters';
+import { useEscapeToClose } from '../hooks/useEscapeToClose';
 
 export const CommandPalette: React.FC = () => {
   const {
@@ -28,7 +29,7 @@ export const CommandPalette: React.FC = () => {
     setActiveView,
     setSelectedLead,
     setIsNewLeadModalOpen,
-    setIsRoleSwitcherOpen,
+    logout,
     hasModuleAccess,
     openWhatsAppDirectHub
   } = useCrm();
@@ -40,6 +41,8 @@ export const CommandPalette: React.FC = () => {
       setQuery('');
     }
   }, [isCommandPaletteOpen]);
+
+  useEscapeToClose(() => setIsCommandPaletteOpen(false), isCommandPaletteOpen);
 
   if (!isCommandPaletteOpen) return null;
 
@@ -228,18 +231,18 @@ export const CommandPalette: React.FC = () => {
                 </div>
 
                 <p className="text-[10px] font-bold tracking-widest uppercase text-[#3A403A]/50 px-3 py-1">
-                  Navegação & Perfis
+                  Navegação & Conta
                 </p>
                 <div className="space-y-0.5 mt-1">
                   <button
                     onClick={() => {
                       setIsCommandPaletteOpen(false);
-                      setIsRoleSwitcherOpen(true);
+                      logout();
                     }}
                     className="w-full text-left px-3 py-2.5 hover:bg-[#FDFCFB] rounded-xl flex items-center gap-2.5 text-xs text-[#344E41] font-semibold"
                   >
                     <ShieldCheck className="w-4 h-4 text-[#588157]" />
-                    <span>Alternar Perfil (Administrador / Corretor)</span>
+                    <span>Sair da conta</span>
                   </button>
 
                   <button

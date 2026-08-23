@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { CrmProvider, useCrm } from './context/CrmContext';
+import { ToastProvider } from './context/ToastContext';
 import { Sidebar } from './components/Sidebar';
 import { DashboardView } from './components/DashboardView';
 import { FunnelsView } from './components/FunnelsView';
@@ -15,31 +16,44 @@ import { NewLeadModal } from './components/NewLeadModal';
 import { RegisterSaleModal } from './components/RegisterSaleModal';
 import { ImportLeadsModal } from './components/ImportLeadsModal';
 import { SetGoalModal } from './components/SetGoalModal';
-import { UserRoleSwitcherModal } from './components/UserRoleSwitcherModal';
+import { MyProfileModal } from './components/MyProfileModal';
 import { WhatsAppDirectModal } from './components/WhatsAppDirectModal';
 import { WhatsAppFloatingButton } from './components/WhatsAppFloatingButton';
 import { ClientPortalView } from './components/ClientPortalView';
+import { LoginView } from './components/LoginView';
+import { InviteAcceptView } from './components/InviteAcceptView';
 import { MODULES_LIST } from './data/initialData';
+import { useEscapeToClose } from './hooks/useEscapeToClose';
 
 const AppContent: React.FC = () => {
   const {
     activeView,
+    setActiveView,
     setIsCommandPaletteOpen,
     hasModuleAccess,
     isClientPortalModalOpen,
     setIsClientPortalModalOpen,
-    clientPortalLead
+    clientPortalLead,
+    isAuthenticated,
+    isAuthLoading
   } = useCrm();
 
   const [portalToken, setPortalToken] = useState<string | null>(null);
+  const [inviteToken, setInviteToken] = useState<string | null>(null);
 
-  // Check URL query param for standalone portal link e.g. ?portal=token or /c/token
+  useEscapeToClose(() => setIsClientPortalModalOpen(false), isClientPortalModalOpen);
+
+  // Check URL query params for standalone links: ?portal=token / ?c=token
+  // (client portal) or ?invite=token (team invite acceptance).
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const token = params.get('portal') || params.get('c');
-    if (token) {
-      setPortalToken(token);
-    }
+    const portal = params.get('portal') || params.get('c');
+    if (portal) setPortalToken(portal);
+    const invite = params.get('invite');
+    if (invite) setInviteToken(invite);
+    // Deep link into a specific Settings section, e.g. /?settings=team
+    if (params.get('settings')) setActiveView('settings');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Global keyboard shortcut for ⌘K / Ctrl+K
@@ -67,6 +81,30 @@ const AppContent: React.FC = () => {
         }}
       />
     );
+  }
+
+  if (inviteToken) {
+    return (
+      <InviteAcceptView
+        token={inviteToken}
+        onDone={() => {
+          setInviteToken(null);
+          window.history.replaceState({}, document.title, window.location.pathname);
+        }}
+      />
+    );
+  }
+
+  if (isAuthLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#FDFCFB]">
+        <div className="w-8 h-8 border-2 border-[#A3B18A] border-t-[#344E41] rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return <LoginView />;
   }
 
   const renderActiveView = () => {
@@ -118,7 +156,7 @@ const AppContent: React.FC = () => {
       <RegisterSaleModal />
       <ImportLeadsModal />
       <SetGoalModal />
-      <UserRoleSwitcherModal />
+      <MyProfileModal />
       <WhatsAppDirectModal />
       <WhatsAppFloatingButton />
 
@@ -137,9 +175,11 @@ const AppContent: React.FC = () => {
 
 export function App() {
   return (
-    <CrmProvider>
-      <AppContent />
-    </CrmProvider>
+    <ToastProvider>
+      <CrmProvider>
+        <AppContent />
+      </CrmProvider>
+    </ToastProvider>
   );
 }
 

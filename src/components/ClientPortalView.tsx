@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { Lead, ClientOnboardingData, ClientDocument, AdditionalBuyer } from '../types';
 import { useCrm } from '../context/CrmContext';
+import { crmApi } from '../services/api';
 
 interface ClientPortalViewProps {
   lead?: Lead | null;
@@ -75,6 +76,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
 
   // Documents
   const [uploadedDocs, setUploadedDocs] = useState<Record<string, ClientDocument>>({});
+  const [uploadingDocs, setUploadingDocs] = useState<Record<string, boolean>>({});
   const [previewDoc, setPreviewDoc] = useState<ClientDocument | null>(null);
 
   // Submission State
@@ -178,49 +180,45 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     }
   };
 
-  // File Upload
+  // File Upload — reads the file, sends it to Supabase Storage, and keeps
+  // only the resulting URL (never the raw base64) in form state.
   const handleFileChange = (docKey: string, docLabel: string, e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    setUploadingDocs(prev => ({ ...prev, [docKey]: true }));
+
     const reader = new FileReader();
-    reader.onload = event => {
-      const fileDataUrl = event.target?.result as string;
-      const newDoc: ClientDocument = {
-        id: `doc-${Date.now()}`,
-        category: docKey as any,
-        categoryLabel: docLabel,
-        fileName: file.name,
-        fileType: file.type,
-        fileDataUrl,
-        fileSize: `${(file.size / (1024 * 1024)).toFixed(1)} MB`,
-        uploadedAt: new Date().toLocaleDateString('pt-BR'),
-        status: 'pendente'
-      };
+    reader.onload = async event => {
+      try {
+        const dataUrl = event.target?.result as string;
+        const base64 = dataUrl.split(',')[1] || '';
 
-      setUploadedDocs(prev => ({
-        ...prev,
-        [docKey]: newDoc
-      }));
+        const uploaded = token
+          ? await crmApi.uploadPortalFile(token, file.name, file.type, base64)
+          : await crmApi.uploadFile(file.name, file.type, base64);
 
-      // AI Document Reading Simulation
-      if (docKey === 'rg_cnh' && !cpf) {
-        setAiAutoFilled(true);
-        setTimeout(() => {
-          if (!cpf) setCpf('384.921.058-44');
-          if (!rg) setRg('44.912.803-8 SSP/SP');
-          if (!naturalness) setNaturalness('Belo Horizonte - MG');
-        }, 800);
-      } else if (docKey === 'comprovante_endereco' && !cep) {
-        setAiAutoFilled(true);
-        setTimeout(() => {
-          setCep('30130-110');
-          setStreet('Av. Afonso Pena');
-          setNumber('1500');
-          setNeighborhood('Centro');
-          setCity('Belo Horizonte');
-          setState('MG');
-        }, 800);
+        const newDoc: ClientDocument = {
+          id: `doc-${Date.now()}`,
+          category: docKey as any,
+          categoryLabel: docLabel,
+          fileName: file.name,
+          fileType: file.type,
+          fileDataUrl: uploaded.url,
+          fileSize: `${(uploaded.size / (1024 * 1024)).toFixed(1)} MB`,
+          uploadedAt: new Date().toLocaleDateString('pt-BR'),
+          status: 'pendente'
+        };
+
+        setUploadedDocs(prev => ({
+          ...prev,
+          [docKey]: newDoc
+        }));
+      } catch (err) {
+        console.error('Falha ao enviar documento:', err);
+        alert('Não foi possível enviar o documento. Tente novamente.');
+      } finally {
+        setUploadingDocs(prev => ({ ...prev, [docKey]: false }));
       }
     };
     reader.readAsDataURL(file);
@@ -822,11 +820,12 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                     )}
                     <button
                       type="button"
+                      disabled={uploadingDocs['rg_cnh']}
                       onClick={() => fileInputRefs.rg_cnh.current?.click()}
-                      className="flex items-center gap-1.5 px-4 py-2 bg-[#1C1B17] hover:bg-[#2C2A24] text-white text-xs font-bold rounded-xl transition cursor-pointer shadow-xs"
+                      className="flex items-center gap-1.5 px-4 py-2 bg-[#1C1B17] hover:bg-[#2C2A24] disabled:opacity-50 text-white text-xs font-bold rounded-xl transition cursor-pointer shadow-xs"
                     >
                       <Upload className="w-3.5 h-3.5" />
-                      <span>{uploadedDocs['rg_cnh'] ? 'Alterar' : 'Anexar'}</span>
+                      <span>{uploadingDocs['rg_cnh'] ? 'Enviando...' : uploadedDocs['rg_cnh'] ? 'Alterar' : 'Anexar'}</span>
                     </button>
                   </div>
                 </div>
@@ -867,11 +866,12 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                     )}
                     <button
                       type="button"
+                      disabled={uploadingDocs['comprovante_endereco']}
                       onClick={() => fileInputRefs.comprovante_endereco.current?.click()}
-                      className="flex items-center gap-1.5 px-4 py-2 bg-[#1C1B17] hover:bg-[#2C2A24] text-white text-xs font-bold rounded-xl transition cursor-pointer shadow-xs"
+                      className="flex items-center gap-1.5 px-4 py-2 bg-[#1C1B17] hover:bg-[#2C2A24] disabled:opacity-50 text-white text-xs font-bold rounded-xl transition cursor-pointer shadow-xs"
                     >
                       <Upload className="w-3.5 h-3.5" />
-                      <span>{uploadedDocs['comprovante_endereco'] ? 'Alterar' : 'Anexar'}</span>
+                      <span>{uploadingDocs['comprovante_endereco'] ? 'Enviando...' : uploadedDocs['comprovante_endereco'] ? 'Alterar' : 'Anexar'}</span>
                     </button>
                   </div>
                 </div>
@@ -912,11 +912,12 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                     )}
                     <button
                       type="button"
+                      disabled={uploadingDocs['certidao_civil']}
                       onClick={() => fileInputRefs.certidao_civil.current?.click()}
-                      className="flex items-center gap-1.5 px-4 py-2 bg-[#1C1B17] hover:bg-[#2C2A24] text-white text-xs font-bold rounded-xl transition cursor-pointer shadow-xs"
+                      className="flex items-center gap-1.5 px-4 py-2 bg-[#1C1B17] hover:bg-[#2C2A24] disabled:opacity-50 text-white text-xs font-bold rounded-xl transition cursor-pointer shadow-xs"
                     >
                       <Upload className="w-3.5 h-3.5" />
-                      <span>{uploadedDocs['certidao_civil'] ? 'Alterar' : 'Anexar'}</span>
+                      <span>{uploadingDocs['certidao_civil'] ? 'Enviando...' : uploadedDocs['certidao_civil'] ? 'Alterar' : 'Anexar'}</span>
                     </button>
                   </div>
                 </div>
@@ -957,11 +958,12 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                     )}
                     <button
                       type="button"
+                      disabled={uploadingDocs['comprovante_renda']}
                       onClick={() => fileInputRefs.comprovante_renda.current?.click()}
-                      className="flex items-center gap-1.5 px-4 py-2 bg-[#1C1B17] hover:bg-[#2C2A24] text-white text-xs font-bold rounded-xl transition cursor-pointer shadow-xs"
+                      className="flex items-center gap-1.5 px-4 py-2 bg-[#1C1B17] hover:bg-[#2C2A24] disabled:opacity-50 text-white text-xs font-bold rounded-xl transition cursor-pointer shadow-xs"
                     >
                       <Upload className="w-3.5 h-3.5" />
-                      <span>{uploadedDocs['comprovante_renda'] ? 'Alterar' : 'Anexar'}</span>
+                      <span>{uploadingDocs['comprovante_renda'] ? 'Enviando...' : uploadedDocs['comprovante_renda'] ? 'Alterar' : 'Anexar'}</span>
                     </button>
                   </div>
                 </div>
@@ -993,7 +995,9 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                 <X className="w-4 h-4" />
               </button>
             </div>
-            {previewDoc.fileDataUrl ? (
+            {previewDoc.fileDataUrl && previewDoc.fileType?.includes('pdf') ? (
+              <iframe src={previewDoc.fileDataUrl} title={previewDoc.fileName} className="w-full h-[60vh] rounded-lg border border-[#E5E0D8]" />
+            ) : previewDoc.fileDataUrl ? (
               <img src={previewDoc.fileDataUrl} alt="Preview" className="max-h-[60vh] mx-auto rounded-lg object-contain" />
             ) : (
               <div className="p-8 text-center text-xs text-slate-500">Documento anexado ({previewDoc.fileSize})</div>

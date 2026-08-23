@@ -9,7 +9,7 @@ interface AccessRestrictedViewProps {
 }
 
 export const AccessRestrictedView: React.FC<AccessRestrictedViewProps> = ({ moduleId, moduleName }) => {
-  const { currentUser, setActiveView, setIsRoleSwitcherOpen } = useCrm();
+  const { currentUser, setActiveView, logout } = useCrm();
 
   return (
     <div className="flex-1 min-h-screen bg-[#FDFCFB] flex flex-col items-center justify-center p-8 text-center animate-in fade-in duration-200">
@@ -39,11 +39,11 @@ export const AccessRestrictedView: React.FC<AccessRestrictedViewProps> = ({ modu
         </button>
 
         <button
-          onClick={() => setIsRoleSwitcherOpen(true)}
+          onClick={logout}
           className="px-5 py-2.5 bg-[#344E41] hover:bg-[#283d33] text-white rounded-xl text-xs font-semibold shadow-xs flex items-center gap-2 transition-colors"
         >
           <UserCheck className="w-4 h-4 text-[#A3B18A]" />
-          <span>Alternar para Administrador</span>
+          <span>Sair e entrar com outra conta</span>
         </button>
       </div>
     </div>

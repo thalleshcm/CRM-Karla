@@ -158,6 +158,8 @@ export interface AdditionalBuyer {
   relationship?: string;
 }
 
+export type DocumentStatus = 'pendente' | 'enviado' | 'em_analise' | 'aprovado' | 'rejeitado' | 'expirado';
+
 export interface LeadAttachedDocument {
   id: string;
   buyerType: 'principal' | 'conjuge' | 'adicional';
@@ -168,11 +170,15 @@ export interface LeadAttachedDocument {
   fileSize?: string;
   fileDataUrl?: string;
   uploadedAt?: string;
-  status: 'pendente' | 'enviado' | 'aprovado' | 'rejeitado';
+  status: DocumentStatus;
+  rejectionReason?: string;
+  reviewedAt?: string;
+  reviewedBy?: string;
   required?: boolean;
 }
 
 export interface LeadContractDetails {
+  contractId?: string; // links to the real Contract record once the sale is registered
   enterpriseName?: string;
   unit?: string;
   saleValue?: number;
@@ -194,8 +200,21 @@ export interface LeadContractDetails {
   otherAttachments?: { name: string; size: string; date: string; url?: string }[];
 }
 
+// A person, independent of any single negotiation — exists so the same buyer
+// can be recognized across multiple Leads (repeat purchases) and so imports/
+// manual creation can dedupe by phone instead of creating a new silo per deal.
+export interface Client {
+  id: string;
+  name: string;
+  phone: string;
+  email?: string;
+  createdAt: string;
+  notes?: string;
+}
+
 export interface Lead {
   id: string;
+  clientId?: string; // links to the Client this negotiation belongs to
   name: string;
   phone: string;
   email?: string;
@@ -375,6 +394,8 @@ export interface UserProfile {
   avatarColor?: string;
   active: boolean;
   assignedLeadCount?: number;
+  managerId?: string; // supervising user's id — enables "team" visibility via canViewTeamLeads
+  lastLoginAt?: string;
 }
 
 export interface RolePermissions {
@@ -386,6 +407,18 @@ export interface RolePermissions {
   canSetGoals: boolean;
   canManageTeam: boolean;
   canAccessSettings: boolean;
+  // Granular per-action additions (kept additive so existing checks never break)
+  canCreateLeads: boolean;
+  canEditLeads: boolean;
+  canDeleteContracts: boolean;
+  canMarkCommissionsPaid: boolean;
+  canManageWebhooks: boolean;
+  canManageMcp: boolean;
+  canManageWhatsApp: boolean;
+  // Visibility one notch below canViewAllLeads: leads/activities of people
+  // whose managerId points at the viewer, plus their own — ignored entirely
+  // when canViewAllLeads is already true.
+  canViewTeamLeads: boolean;
 }
 
 export interface RolePermissionConfig {
@@ -402,6 +435,62 @@ export interface ModuleMetadata {
   name: string;
   description: string;
   category: 'Comercial' | 'Relacionamento' | 'Financeiro & Gestão' | 'Sistema';
+}
+
+export type WebhookEvent =
+  | 'lead.created'
+  | 'lead.stage_changed'
+  | 'lead.won'
+  | 'lead.lost'
+  | 'contract.created';
+
+export interface OutgoingWebhook {
+  id: string;
+  name: string;
+  url: string;
+  events: WebhookEvent[];
+  secret: string;
+  enabled: boolean;
+  createdAt: string;
+  lastTriggeredAt?: string;
+  lastStatus?: 'success' | 'failed';
+  lastError?: string;
+}
+
+export interface Invite {
+  id: string;
+  name: string;
+  email: string;
+  role: UserRole;
+  roleLabel: string;
+  creci?: string;
+  phone?: string;
+  token: string;
+  invitedBy: string; // userId of the admin who created it
+  createdAt: string;
+  expiresAt: string;
+  usedAt?: string;
+}
+
+export interface AuditLogEntry {
+  id: string;
+  actorId: string;
+  actorName: string;
+  action: string; // e.g. 'invite_created', 'user_deactivated', 'permission_changed'
+  targetLabel: string; // human-readable subject, e.g. a user's name or "Corretor de Imóveis"
+  details?: string;
+  createdAt: string;
+}
+
+export interface McpToken {
+  id: string;
+  name: string;
+  tokenPreview: string; // last 4 chars only, for display
+  scopes: ('read' | 'write')[];
+  createdAt: string;
+  lastUsedAt?: string;
+  expiresAt?: string; // absent = never expires
+  revoked: boolean;
 }
 
 export interface CrmSettings {
@@ -428,6 +517,17 @@ export interface CrmSettings {
   evolutionPhoneNumber?: string;
   evolutionEnabled: boolean;
   evolutionAutoSendOnMove?: boolean;
+
+  // Inbound lead-capture webhook
+  inboundWebhookSecret: string;
+  inboundWebhookDefaults: {
+    funnelId: string;
+    stageId: StageId;
+    brokerId?: string;
+  };
+
+  // MCP server
+  mcpEnabled: boolean;
 }
 
 export type ViewType = 

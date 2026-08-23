@@ -1,14 +1,16 @@
-import React, { useState } from 'react';
-import { X, Plus, UserPlus, User } from 'lucide-react';
+import React, { useState, useMemo } from 'react';
+import { X, Plus, UserPlus, User, AlertTriangle } from 'lucide-react';
 import { useCrm } from '../context/CrmContext';
 import { LeadTemperature, StageId } from '../types';
 import { STAGES } from '../data/initialData';
+import { useEscapeToClose } from '../hooks/useEscapeToClose';
 
 export const NewLeadModal: React.FC = () => {
   const {
     isNewLeadModalOpen,
     setIsNewLeadModalOpen,
     addLead,
+    findClientMatch,
     funnels,
     activeFunnelId,
     users,
@@ -19,6 +21,7 @@ export const NewLeadModal: React.FC = () => {
 
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
+  const [dismissedMatchFor, setDismissedMatchFor] = useState('');
   const [email, setEmail] = useState('');
   const [propertyInterest, setPropertyInterest] = useState('');
   const [estimatedValue, setEstimatedValue] = useState<string>('');
@@ -29,6 +32,15 @@ export const NewLeadModal: React.FC = () => {
   const [birthday, setBirthday] = useState('');
   const [notes, setNotes] = useState('');
   const [assignedBrokerId, setAssignedBrokerId] = useState(currentUser.id);
+
+  useEscapeToClose(() => setIsNewLeadModalOpen(false), isNewLeadModalOpen);
+
+  // Non-blocking dedup check — informs the broker a phone already belongs to
+  // a known client instead of silently creating a disconnected duplicate.
+  // The actual link happens automatically in addLead regardless of whether
+  // this banner is dismissed; it's purely so the broker isn't surprised.
+  const clientMatch = useMemo(() => (phone.trim() ? findClientMatch(phone) : null), [phone, findClientMatch]);
+  const showMatchBanner = !!clientMatch && dismissedMatchFor !== phone.trim();
 
   if (!isNewLeadModalOpen) return null;
 
@@ -68,6 +80,7 @@ export const NewLeadModal: React.FC = () => {
     setEstimatedValue('');
     setBirthday('');
     setNotes('');
+    setDismissedMatchFor('');
   };
 
   return (
@@ -154,6 +167,25 @@ export const NewLeadModal: React.FC = () => {
                 onChange={e => setPhone(e.target.value)}
                 className="w-full text-xs p-2.5 bg-[#FDFCFB] border border-[#EAE7E2] rounded-xl text-[#3A403A] placeholder-[#3A403A]/40 focus:outline-hidden focus:border-[#A3B18A]"
               />
+              {showMatchBanner && clientMatch && (
+                <div className="mt-2 p-2.5 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-2">
+                  <AlertTriangle className="w-3.5 h-3.5 text-amber-600 mt-0.5 shrink-0" />
+                  <div className="flex-1">
+                    <p className="text-[11px] text-amber-800 leading-relaxed">
+                      Este telefone já pertence a <strong>{clientMatch.client.name}</strong>
+                      {clientMatch.leadCount > 0 && ` (${clientMatch.leadCount} negociação${clientMatch.leadCount > 1 ? 'ões' : ''} anterior${clientMatch.leadCount > 1 ? 'es' : ''})`}.
+                      Este novo lead será vinculado automaticamente a esse cliente.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => setDismissedMatchFor(phone.trim())}
+                      className="text-[11px] font-semibold text-amber-700 hover:underline mt-1"
+                    >
+                      Entendi
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
 
             <div>

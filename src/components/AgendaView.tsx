@@ -38,6 +38,7 @@ import { useCrm } from '../context/CrmContext';
 import { Header } from './Header';
 import { Activity, ActivityType } from '../types';
 import { formatDateTimePtBR, getMonthNamePtBR, getWhatsAppLink, formatPhone } from '../utils/formatters';
+import { useEscapeToClose } from '../hooks/useEscapeToClose';
 
 type CalendarViewMode = 'mes' | 'semana' | 'dia' | 'lista';
 
@@ -140,6 +141,11 @@ export const AgendaView: React.FC = () => {
   const [isNewModalOpen, setIsNewModalOpen] = useState(false);
   const [selectedActivityDetail, setSelectedActivityDetail] = useState<Activity | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  useEscapeToClose(() => {
+    if (selectedActivityDetail) setSelectedActivityDetail(null);
+    else if (isNewModalOpen) setIsNewModalOpen(false);
+  }, isNewModalOpen || !!selectedActivityDetail);
 
   // Completed and Dismissed Birthday Wish IDs (persisted locally)
   const [completedBirthdayIds, setCompletedBirthdayIds] = useState<string[]>(() => {

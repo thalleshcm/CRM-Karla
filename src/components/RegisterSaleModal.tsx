@@ -16,6 +16,7 @@ import {
 import { useCrm } from '../context/CrmContext';
 import { formatCurrency } from '../utils/formatters';
 import { CommissionSplitPercents, CommissionSplitBonus } from '../types';
+import { useEscapeToClose } from '../hooks/useEscapeToClose';
 
 export const RegisterSaleModal: React.FC = () => {
   const {
@@ -89,6 +90,8 @@ export const RegisterSaleModal: React.FC = () => {
       setPropertyFromLead(found);
     }
   };
+
+  useEscapeToClose(() => setIsSaleModalOpen(false), isSaleModalOpen);
 
   if (!isSaleModalOpen) return null;
 

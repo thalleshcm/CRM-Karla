@@ -9,12 +9,8 @@ import {
   Settings,
   Search,
   LogOut,
-  Building2,
-  Sparkles,
-  Users,
-  Shield,
-  Lock,
-  MessageSquare
+  MessageSquare,
+  X
 } from 'lucide-react';
 import { useCrm } from '../context/CrmContext';
 import { ViewType } from '../types';
@@ -28,8 +24,10 @@ export const Sidebar: React.FC = () => {
     notifications,
     currentUser,
     hasModuleAccess,
-    setIsRoleSwitcherOpen,
-    openWhatsAppDirectHub
+    logout,
+    openWhatsAppDirectHub,
+    isMobileSidebarOpen,
+    setIsMobileSidebarOpen
   } = useCrm();
 
   const navItems: { id: ViewType; label: string; icon: React.FC<{ className?: string }>; badge?: number }[] = [
@@ -45,29 +43,53 @@ export const Sidebar: React.FC = () => {
   const unreadCount = notifications.filter(n => !n.read).length;
 
   return (
-    <aside className="w-64 min-w-[16rem] bg-[#3E4A3D] text-[#E9EDC9] flex flex-col justify-between h-screen sticky top-0 select-none z-20 shadow-md">
-      <div className="p-4 flex flex-col gap-5">
+    <>
+      {/* Mobile/tablet backdrop overlay — click to close the drawer */}
+      {isMobileSidebarOpen && (
+        <div
+          className="fixed inset-0 bg-black/50 z-30 lg:hidden animate-in fade-in duration-150"
+          onClick={() => setIsMobileSidebarOpen(false)}
+        />
+      )}
+
+      <aside
+        className={`w-72 min-w-[18rem] lg:w-64 lg:min-w-[16rem] bg-[#3E4A3D] text-[#E9EDC9] flex flex-col justify-between h-screen fixed lg:sticky top-0 left-0 select-none z-40 shadow-md transition-transform duration-200 ${
+          isMobileSidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
+        }`}
+      >
+      <div className="p-4 flex flex-col gap-5 overflow-y-auto">
         {/* Brand Header */}
-        <div className="px-2 pt-1 pb-2 flex flex-col items-start gap-1">
-          <div className="flex items-center gap-2.5">
-            {/* Natural Tones Emblem Logo */}
-            <div className="w-8 h-8 rounded-xl bg-[#A3B18A] flex items-center justify-center text-[#3E4A3D] shadow-xs">
-              <span className="font-serif-title font-bold text-base leading-none">
-                {settings.companyName.charAt(0) || 'A'}
-              </span>
+        <div className="px-2 pt-1 pb-2 flex items-start justify-between gap-1">
+          <div className="flex flex-col gap-1">
+            <div className="flex items-center gap-2.5">
+              {/* Natural Tones Emblem Logo */}
+              <div className="w-8 h-8 rounded-xl bg-[#A3B18A] flex items-center justify-center text-[#3E4A3D] shadow-xs shrink-0">
+                <span className="font-serif-title font-bold text-base leading-none">
+                  {settings.companyName.charAt(0) || 'A'}
+                </span>
+              </div>
+              <div>
+                <h1 className="font-brand font-bold text-white tracking-[0.2em] text-base leading-tight">
+                  {settings.companyName.split(' ')[0] || 'AURUM'}
+                </h1>
+                <p className="text-[9px] uppercase tracking-widest text-[#A3B18A] font-semibold">
+                  Soluções Imobiliárias
+                </p>
+              </div>
             </div>
-            <div>
-              <h1 className="font-brand font-bold text-white tracking-[0.2em] text-base leading-tight">
-                {settings.companyName.split(' ')[0] || 'AURUM'}
-              </h1>
-              <p className="text-[9px] uppercase tracking-widest text-[#A3B18A] font-semibold">
-                Soluções Imobiliárias
-              </p>
-            </div>
+            <p className="text-[10px] text-[#E9EDC9]/70 font-normal italic pl-0.5 mt-0.5 tracking-tight">
+              {settings.slogan || 'Soluções que constroem legados'}
+            </p>
           </div>
-          <p className="text-[10px] text-[#E9EDC9]/70 font-normal italic pl-0.5 mt-0.5 tracking-tight">
-            {settings.slogan || 'Soluções que constroem legados'}
-          </p>
+
+          {/* Close button — mobile/tablet only */}
+          <button
+            onClick={() => setIsMobileSidebarOpen(false)}
+            className="lg:hidden p-1.5 text-[#E9EDC9]/70 hover:text-white hover:bg-white/10 rounded-lg transition-colors shrink-0"
+            aria-label="Fechar menu"
+          >
+            <X className="w-5 h-5" />
+          </button>
         </div>
 
         {/* Global Search Input trigger */}
@@ -140,19 +162,15 @@ export const Sidebar: React.FC = () => {
 
       {/* Bottom Profile Footer */}
       <div className="p-3 border-t border-white/10 bg-[#344E41]/60">
-        <button
-          onClick={() => setIsRoleSwitcherOpen(true)}
-          className="w-full flex items-center justify-between p-2 rounded-xl hover:bg-white/10 transition-colors group text-left"
-          title="Clique para alternar usuário ou perfil"
-        >
-          <div className="flex items-center gap-2.5">
+        <div className="w-full flex items-center justify-between p-2 rounded-xl">
+          <div className="flex items-center gap-2.5 min-w-0">
             <div
-              className="w-8 h-8 rounded-xl text-white flex items-center justify-center font-bold text-xs shadow-xs"
+              className="w-8 h-8 rounded-xl text-white flex items-center justify-center font-bold text-xs shadow-xs shrink-0"
               style={{ backgroundColor: currentUser.avatarColor || '#344E41' }}
             >
               {currentUser.initials}
             </div>
-            <div className="text-left leading-tight">
+            <div className="text-left leading-tight min-w-0">
               <p className="text-xs font-semibold text-white truncate max-w-[110px]">
                 {currentUser.name}
               </p>
@@ -162,12 +180,18 @@ export const Sidebar: React.FC = () => {
             </div>
           </div>
 
-          <span className="text-[10px] bg-white/10 group-hover:bg-white/20 text-[#E9EDC9] px-2 py-0.5 rounded-md font-mono transition-colors">
-            Trocar
-          </span>
-        </button>
+          <button
+            onClick={logout}
+            className="flex items-center gap-1 text-[10px] bg-white/10 hover:bg-rose-500/20 text-[#E9EDC9] hover:text-rose-200 px-2 py-1 rounded-md font-semibold transition-colors shrink-0"
+            title="Sair da conta"
+          >
+            <LogOut className="w-3 h-3" />
+            <span>Sair</span>
+          </button>
+        </div>
       </div>
-    </aside>
+      </aside>
+    </>
   );
 };
 

@@ -18,13 +18,16 @@ import {
   Filter,
   CheckCircle2,
   X,
-  AlertCircle
+  AlertCircle,
+  UserPlus
 } from 'lucide-react';
 import { useCrm } from '../context/CrmContext';
 import { Header } from './Header';
 import { STAGES } from '../data/initialData';
 import { StageId, LeadTemperature, LOST_REASON_OPTIONS } from '../types';
 import { formatCurrency, formatDateTimePtBR } from '../utils/formatters';
+import { computeLeadHealthScore, LEAD_HEALTH_TIER_EMOJI } from '../utils/leadHealth';
+import { useEscapeToClose } from '../hooks/useEscapeToClose';
 
 export const FunnelsView: React.FC = () => {
   const {
@@ -42,11 +45,13 @@ export const FunnelsView: React.FC = () => {
     setLeadStatusFilter,
     markLeadWon,
     markLeadLost,
-    reactivateLead
+    reactivateLead,
+    setIsNewLeadModalOpen
   } = useCrm();
 
   const [dragOverStageId, setDragOverStageId] = useState<StageId | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
+  const [prioritizeByRisk, setPrioritizeByRisk] = useState(false);
   const [lostModalLeadId, setLostModalLeadId] = useState<string | null>(null);
   const [lostReasonSelected, setLostReasonSelected] = useState<string>(LOST_REASON_OPTIONS[0]);
   const [lostNotesInput, setLostNotesInput] = useState('');
@@ -148,6 +153,8 @@ export const FunnelsView: React.FC = () => {
 
   const selectedLostLead = visibleLeads.find(l => l.id === lostModalLeadId);
 
+  useEscapeToClose(() => setLostModalLeadId(null), !!lostModalLeadId);
+
   return (
     <div className="flex-1 min-h-screen bg-[#FDFCFB] flex flex-col relative">
       {/* Toast Notification */}
@@ -161,10 +168,21 @@ export const FunnelsView: React.FC = () => {
       <Header
         title="Funil de Vendas & Atendimento"
         subtitle="Arraste os cards para avançar os estágios da negociação imobiliária."
+        actionButton={
+          hasPermission('canCreateLeads') ? (
+            <button
+              onClick={() => setIsNewLeadModalOpen(true)}
+              className="flex items-center gap-2 px-4 py-2 bg-[#344E41] hover:bg-[#283d33] text-white rounded-xl text-xs font-semibold shadow-xs transition-colors"
+            >
+              <UserPlus className="w-3.5 h-3.5 text-[#A3B18A]" />
+              <span>Novo Lead</span>
+            </button>
+          ) : undefined
+        }
       />
 
       {/* Main Filter & Status Control Bar */}
-      <div className="px-6 sm:px-8 py-3 bg-[#F4F1EA] border-b border-[#EAE7E2] flex items-center justify-between flex-wrap gap-3">
+      <div className="px-4 sm:px-6 lg:px-8 py-3 bg-[#F4F1EA] border-b border-[#EAE7E2] flex items-center justify-between flex-wrap gap-3">
         {/* Left Side: Funnels & Status Filters */}
         <div className="flex items-center gap-3 flex-wrap">
           {/* Funnel Selector */}
@@ -273,6 +291,19 @@ export const FunnelsView: React.FC = () => {
 
         {/* Right Side: Quick Search & Total Summary */}
         <div className="flex items-center gap-3">
+          <button
+            onClick={() => setPrioritizeByRisk(v => !v)}
+            title="Ordena cada coluna colocando os leads com Lead Health mais baixo (maior risco) primeiro"
+            className={`px-2.5 py-1.5 text-xs rounded-xl font-semibold border transition-all flex items-center gap-1.5 cursor-pointer shadow-2xs ${
+              prioritizeByRisk
+                ? 'bg-rose-600 text-white border-rose-600'
+                : 'bg-white text-[#3A403A] border-[#EAE7E2] hover:bg-[#FDFCFB]'
+            }`}
+          >
+            <AlertCircle className="w-3.5 h-3.5" />
+            <span>Priorizar por risco</span>
+          </button>
+
           <div className="relative">
             <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5 pointer-events-none" />
             <input
@@ -301,7 +332,7 @@ export const FunnelsView: React.FC = () => {
 
       {/* Info Banner when viewing Lost or Won leads */}
       {leadStatusFilter === 'perdidos' && (
-        <div className="px-8 py-2 bg-rose-50 border-b border-rose-200 flex items-center justify-between text-xs text-rose-800 font-medium">
+        <div className="px-4 sm:px-8 py-2 bg-rose-50 border-b border-rose-200 flex items-center justify-between text-xs text-rose-800 font-medium">
           <div className="flex items-center gap-2">
             <XCircle className="w-4 h-4 text-rose-600 shrink-0" />
             <span>
@@ -318,7 +349,7 @@ export const FunnelsView: React.FC = () => {
       )}
 
       {leadStatusFilter === 'ganhos' && (
-        <div className="px-8 py-2 bg-emerald-50 border-b border-emerald-200 flex items-center justify-between text-xs text-emerald-800 font-medium">
+        <div className="px-4 sm:px-8 py-2 bg-emerald-50 border-b border-emerald-200 flex items-center justify-between text-xs text-emerald-800 font-medium">
           <div className="flex items-center gap-2">
             <Trophy className="w-4 h-4 text-emerald-600 shrink-0" />
             <span>
@@ -334,11 +365,24 @@ export const FunnelsView: React.FC = () => {
         </div>
       )}
 
+      {/* Touch devices can't drag cards between columns — point them at the tap alternative */}
+      <p className="lg:hidden px-4 sm:px-6 pt-2 text-[11px] text-[#3A403A]/50">
+        Toque em um card para abrir os detalhes e mudar de etapa.
+      </p>
+
       {/* Kanban Board Container */}
-      <div className="flex-1 p-6 overflow-x-auto">
+      <div className="flex-1 p-3 sm:p-4 lg:p-6 overflow-x-auto snap-x snap-mandatory lg:snap-none">
         <div className="flex items-start gap-3.5 min-w-max pb-6">
           {STAGES.map((stage, idx) => {
-            const stageLeads = funnelLeads.filter(l => l.stageId === stage.id);
+            const stageLeadsRaw = funnelLeads.filter(l => l.stageId === stage.id);
+            const stageLeads = prioritizeByRisk
+              ? [...stageLeadsRaw].sort((a, b) => {
+                  if ((!a.status || a.status === 'ativo') !== (!b.status || b.status === 'ativo')) {
+                    return (!a.status || a.status === 'ativo') ? -1 : 1;
+                  }
+                  return computeLeadHealthScore(a).score - computeLeadHealthScore(b).score;
+                })
+              : stageLeadsRaw;
             const stageTotalValue = stageLeads.reduce((sum, l) => sum + (l.estimatedValue || 0), 0);
             const isOver = dragOverStageId === stage.id;
             const isLastStage = idx === STAGES.length - 1 || stage.id === 'pos_venda' || stage.id === 'venda_concluida';
@@ -349,7 +393,7 @@ export const FunnelsView: React.FC = () => {
                 onDragOver={e => handleDragOver(e, stage.id)}
                 onDragLeave={handleDragLeave}
                 onDrop={e => handleDrop(e, stage.id)}
-                className={`w-72 min-w-[18rem] rounded-2xl flex flex-col border border-[#EAE7E2] transition-colors ${
+                className={`w-[82vw] sm:w-72 min-w-[18rem] snap-center rounded-2xl flex flex-col border border-[#EAE7E2] transition-colors ${
                   isOver ? 'bg-[#A3B18A]/20 ring-2 ring-[#588157]' : 'bg-[#F1EFEA]/80'
                 }`}
               >
@@ -433,6 +477,22 @@ export const FunnelsView: React.FC = () => {
                         </h4>
                         {getTemperatureBadge(lead.temperature)}
                       </div>
+
+                      {/* Lead Health badge — rule-based priority signal, only for active deals with enough history to score */}
+                      {(!lead.status || lead.status === 'ativo') && (() => {
+                        const health = computeLeadHealthScore(lead);
+                        const tooNew = health.score === 0 && (Date.now() - Date.parse(lead.createdAt)) < 2 * 24 * 60 * 60 * 1000;
+                        if (tooNew) return null;
+                        return (
+                          <div
+                            className="flex items-center gap-1 text-[10px] font-semibold mt-1 w-fit"
+                            title={health.breakdown.map(b => `${b.label}: ${b.points > 0 ? '+' : ''}${b.points}`).join(' · ') || 'Sem sinais registrados ainda'}
+                          >
+                            <span>{LEAD_HEALTH_TIER_EMOJI[health.tier]}</span>
+                            <span className="text-[#3A403A]/60">{health.score}/100</span>
+                          </div>
+                        );
+                      })()}
 
                       {/* Broker Attribution Badge */}
                       {canViewAll && lead.brokerName && (

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Bell, ChevronDown, Filter, Users, UserCheck } from 'lucide-react';
+import { Bell, UserCheck, Menu } from 'lucide-react';
 import { useCrm } from '../context/CrmContext';
 
 interface HeaderProps {
@@ -14,11 +14,9 @@ export const Header: React.FC<HeaderProps> = ({ title, subtitle, actionButton })
     markNotificationRead,
     markAllNotificationsRead,
     currentUser,
-    users,
-    adminFilterBrokerId,
-    setAdminFilterBrokerId,
-    setIsRoleSwitcherOpen,
-    hasPermission
+    hasPermission,
+    setIsMobileSidebarOpen,
+    setIsMyProfileModalOpen
   } = useCrm();
   const [isNotifOpen, setIsNotifOpen] = useState(false);
 
@@ -26,49 +24,38 @@ export const Header: React.FC<HeaderProps> = ({ title, subtitle, actionButton })
   const canViewAll = hasPermission('canViewAllLeads');
 
   return (
-    <header className="px-8 py-5 border-b border-[#EAE7E2] bg-white/80 backdrop-blur-md flex flex-wrap items-center justify-between gap-4 sticky top-0 z-10">
-      <div>
-        <h2 className="font-serif-title text-2xl font-semibold text-[#344E41] tracking-tight">
-          {title}
-        </h2>
-        <p className="text-xs text-[#3A403A]/70 mt-0.5">
-          {subtitle}
-        </p>
+    <header className="px-4 sm:px-6 lg:px-8 py-4 lg:py-5 border-b border-[#EAE7E2] bg-white/80 backdrop-blur-md flex flex-wrap items-center justify-between gap-3 sm:gap-4 sticky top-0 z-10">
+      <div className="flex items-center gap-3 min-w-0">
+        <button
+          onClick={() => setIsMobileSidebarOpen(true)}
+          className="lg:hidden p-2 -ml-2 text-[#344E41] hover:bg-[#F1EFEC] rounded-xl transition-colors shrink-0"
+          aria-label="Abrir menu"
+        >
+          <Menu className="w-5 h-5" />
+        </button>
+        <div className="min-w-0">
+          <h2 className="font-serif-title text-lg sm:text-xl lg:text-2xl font-semibold text-[#344E41] tracking-tight truncate">
+            {title}
+          </h2>
+          <p className="text-xs text-[#3A403A]/70 mt-0.5 hidden sm:block">
+            {subtitle}
+          </p>
+        </div>
       </div>
 
       <div className="flex items-center flex-wrap gap-3">
-        {/* Admin Filter: View entire agency or filter by individual broker */}
-        {canViewAll && (
-          <div className="flex items-center gap-1.5 px-3 py-1.5 bg-[#F4F1EA] border border-[#EAE7E2] rounded-xl text-xs">
-            <Filter className="w-3.5 h-3.5 text-[#588157]" />
-            <span className="text-[11px] font-medium text-[#3A403A]/70 hidden md:inline">Visão:</span>
-            <select
-              value={adminFilterBrokerId}
-              onChange={e => setAdminFilterBrokerId(e.target.value)}
-              className="bg-transparent text-xs font-semibold text-[#344E41] focus:outline-hidden cursor-pointer"
-            >
-              <option value="all">🏢 Toda a Imobiliária (Geral)</option>
-              {users.map(u => (
-                <option key={u.id} value={u.id}>
-                  👤 {u.name} ({u.role === 'admin' ? 'Admin' : 'Corretor'})
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
-
         {!canViewAll && (
-          <div className="flex items-center gap-1.5 px-3 py-1.5 bg-[#588157]/10 border border-[#588157]/20 rounded-xl text-xs">
+          <div className="hidden md:flex items-center gap-1.5 px-3 py-1.5 bg-[#588157]/10 border border-[#588157]/20 rounded-xl text-xs">
             <UserCheck className="w-3.5 h-3.5 text-[#588157]" />
             <span className="text-[11px] font-semibold text-[#344E41]">Meu Portfólio Exclusivo</span>
           </div>
         )}
 
-        {/* User Profile / Role Switcher Pill */}
+        {/* User Profile Pill */}
         <button
-          onClick={() => setIsRoleSwitcherOpen(true)}
-          className="flex items-center gap-2.5 px-3 py-1.5 bg-[#FDFCFB] hover:bg-[#F4F1EA] border border-[#EAE7E2] rounded-xl text-xs transition-all shadow-2xs group"
-          title="Clique para alternar perfil de usuário"
+          onClick={() => setIsMyProfileModalOpen(true)}
+          title="Meu Perfil"
+          className="hidden sm:flex items-center gap-2.5 px-3 py-1.5 bg-[#FDFCFB] hover:bg-[#F1EFEC] border border-[#EAE7E2] rounded-xl text-xs shadow-2xs transition-colors"
         >
           <div
             className="w-6 h-6 rounded-lg text-white flex items-center justify-center font-bold text-[10px] shadow-2xs"
@@ -90,7 +77,6 @@ export const Header: React.FC<HeaderProps> = ({ title, subtitle, actionButton })
               </span>
             </p>
           </div>
-          <ChevronDown className="w-3.5 h-3.5 text-[#3A403A]/50 group-hover:text-[#344E41] transition-colors" />
         </button>
 
         {actionButton}

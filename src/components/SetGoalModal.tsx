@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { X, Target, DollarSign, Check } from 'lucide-react';
 import { useCrm } from '../context/CrmContext';
+import { useEscapeToClose } from '../hooks/useEscapeToClose';
 
 export const SetGoalModal: React.FC = () => {
   const {
@@ -13,6 +14,8 @@ export const SetGoalModal: React.FC = () => {
 
   const [salesGoal, setSalesGoal] = useState<number>(settings.monthlySalesGoalCount || 4);
   const [vgvGoal, setVgvGoal] = useState<number>(settings.monthlyVgvGoal || 3500000);
+
+  useEscapeToClose(() => setIsGoalModalOpen(false), isGoalModalOpen);
 
   if (!isGoalModalOpen) return null;
 

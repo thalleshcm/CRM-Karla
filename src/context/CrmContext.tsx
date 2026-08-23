@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useMemo } from 'react';
+import React, { createContext, useContext, useState, useEffect, useMemo, useRef } from 'react';
 import confetti from 'canvas-confetti';
 import { crmApi } from '../services/api';
 import {
@@ -17,8 +17,13 @@ import {
   UserProfile,
   UserRole,
   RolePermissionConfig,
-  RolePermissions
+  RolePermissions,
+  OutgoingWebhook,
+  WebhookEvent,
+  McpToken,
+  Client
 } from '../types';
+import { normalizePhoneKey } from '../utils/formatters';
 import {
   DEFAULT_FUNNELS,
   DEFAULT_SETTINGS,
@@ -30,6 +35,30 @@ import {
   DEFAULT_ROLE_PERMISSIONS,
   STAGES
 } from '../data/initialData';
+
+function safeSetLocalStorage(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
+  } catch (err) {
+    console.error(`Failed to persist "${key}" to localStorage (likely quota exceeded):`, err);
+  }
+}
+
+export interface ImportLeadRow {
+  name: string;
+  phone: string;
+  email?: string;
+  propertyInterest?: string;
+  estimatedValue?: number;
+  funnelId?: string;
+  origin?: string;
+}
+
+export interface ImportResult {
+  created: number;
+  linkedToExistingClient: number;
+  errors: { row: number; error: string }[];
+}
 
 interface CrmNotification {
   id: string;
@@ -48,6 +77,7 @@ interface CrmContextType {
   
   // Raw Data
   leads: Lead[];
+  clients: Client[];
   funnels: Funnel[];
   activities: Activity[];
   contracts: Contract[];
@@ -77,10 +107,21 @@ interface CrmContextType {
   setSaleModalLead: (lead: Lead | null) => void;
   isGoalModalOpen: boolean;
   setIsGoalModalOpen: (open: boolean) => void;
+  isMyProfileModalOpen: boolean;
+  setIsMyProfileModalOpen: (open: boolean) => void;
   isCommandPaletteOpen: boolean;
   setIsCommandPaletteOpen: (open: boolean) => void;
-  isRoleSwitcherOpen: boolean;
-  setIsRoleSwitcherOpen: (open: boolean) => void;
+  isMobileSidebarOpen: boolean;
+  setIsMobileSidebarOpen: (open: boolean) => void;
+
+  // Auth
+  isAuthenticated: boolean;
+  isAuthLoading: boolean;
+  authToken: string | null;
+  login: (email: string, password: string) => Promise<void>;
+  firstAccess: (payload: { userId?: string; email?: string; password: string }) => Promise<void>;
+  acceptInvite: (inviteToken: string, password: string) => Promise<void>;
+  logout: () => void;
 
   // WhatsApp Central Hub
   isWhatsAppModalOpen: boolean;
@@ -120,6 +161,9 @@ interface CrmContextType {
   leadStatusFilter: LeadStatusFilter;
   setLeadStatusFilter: (filter: LeadStatusFilter) => void;
   addLead: (lead: Omit<Lead, 'id' | 'createdAt' | 'history'>) => Lead;
+  findClientMatch: (phone: string) => { client: Client; leadCount: number } | null;
+  getClientLeads: (clientId: string | undefined) => Lead[];
+  importLeadsBulk: (rows: ImportLeadRow[]) => Promise<ImportResult>;
   updateLead: (id: string, updates: Partial<Lead>) => void;
   deleteLead: (id: string) => void;
   moveLeadStage: (id: string, stageId: StageId) => void;
@@ -155,12 +199,58 @@ interface CrmContextType {
   markNotificationRead: (id: string) => void;
   markAllNotificationsRead: () => void;
   triggerConfetti: () => void;
+
+  // Integrations: outgoing webhooks & MCP tokens
+  outgoingWebhooks: OutgoingWebhook[];
+  createWebhook: (payload: { name: string; url: string; events: WebhookEvent[] }) => Promise<void>;
+  updateWebhook: (id: string, updates: Partial<Pick<OutgoingWebhook, 'name' | 'url' | 'events' | 'enabled'>>) => Promise<void>;
+  deleteWebhook: (id: string) => Promise<void>;
+  testWebhook: (id: string) => Promise<{ success: boolean; status?: number; error?: string }>;
+  mcpTokens: McpToken[];
+  createMcpToken: (name: string, scopes: ('read' | 'write')[], expiresInDays?: number) => Promise<string>;
+  revokeMcpToken: (id: string) => Promise<void>;
 }
 
 const CrmContext = createContext<CrmContextType | undefined>(undefined);
 
 export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [activeView, setActiveView] = useState<ViewType>('dashboard');
+  const [activeView, setActiveViewState] = useState<ViewType>('dashboard');
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
+
+  // Track module navigation in browser history so the Back button moves
+  // between modules (Dashboard, Funil, Contratos...) instead of leaving the
+  // app entirely — previously switching views never touched history at all.
+  const isHandlingPopState = useRef(false);
+  useEffect(() => {
+    // Seed the very first history entry with the initial view, so the
+    // first Back press has something of ours to land on.
+    window.history.replaceState({ crmView: 'dashboard' }, '');
+
+    const handlePopState = (event: PopStateEvent) => {
+      const view = (event.state?.crmView as ViewType) || 'dashboard';
+      isHandlingPopState.current = true;
+      setActiveViewState(view);
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  const setActiveView = (view: ViewType) => {
+    if (isHandlingPopState.current) {
+      // This change came from the user pressing Back/Forward — the
+      // history entry already exists, don't push a duplicate one.
+      isHandlingPopState.current = false;
+    } else if (view !== activeView) {
+      window.history.pushState({ crmView: view }, '');
+    }
+    setActiveViewState(view);
+  };
+
+  // Close the mobile off-canvas drawer whenever navigation happens, no
+  // matter where the nav originated (sidebar link, command palette, etc.)
+  useEffect(() => {
+    setIsMobileSidebarOpen(false);
+  }, [activeView]);
   const [activeFunnelId, setActiveFunnelId] = useState<string>('investidores');
   
   // Modals state
@@ -171,8 +261,13 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [isSaleModalOpen, setIsSaleModalOpen] = useState(false);
   const [saleModalLead, setSaleModalLead] = useState<Lead | null>(null);
   const [isGoalModalOpen, setIsGoalModalOpen] = useState(false);
+  const [isMyProfileModalOpen, setIsMyProfileModalOpen] = useState(false);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
-  const [isRoleSwitcherOpen, setIsRoleSwitcherOpen] = useState(false);
+
+  // Auth state
+  const [authToken, setAuthToken] = useState<string | null>(() => localStorage.getItem('aurum_auth_token'));
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
 
   // WhatsApp Central Hub Modal State
   const [isWhatsAppModalOpen, setIsWhatsAppModalOpen] = useState(false);
@@ -269,9 +364,28 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return saved || 'user-admin-1';
   });
 
+  // Merges onto DEFAULT_ROLE_PERMISSIONS (rather than trusting the stored
+  // object as-is) so a permission key added after this cache was last
+  // written — like canManageWhatsApp — doesn't silently evaluate to
+  // false/undefined for an admin until settings are re-saved.
+  const mergeRolePermissions = (stored: Partial<Record<UserRole, RolePermissionConfig>>): Record<UserRole, RolePermissionConfig> => {
+    const merged = { ...DEFAULT_ROLE_PERMISSIONS };
+    (Object.keys(DEFAULT_ROLE_PERMISSIONS) as UserRole[]).forEach(role => {
+      const storedConfig = stored[role];
+      if (storedConfig) {
+        merged[role] = {
+          ...DEFAULT_ROLE_PERMISSIONS[role],
+          ...storedConfig,
+          permissions: { ...DEFAULT_ROLE_PERMISSIONS[role].permissions, ...storedConfig.permissions }
+        };
+      }
+    });
+    return merged;
+  };
+
   const [rolePermissions, setRolePermissions] = useState<Record<UserRole, RolePermissionConfig>>(() => {
     const saved = localStorage.getItem('aurum_role_permissions');
-    return saved ? JSON.parse(saved) : DEFAULT_ROLE_PERMISSIONS;
+    return saved ? mergeRolePermissions(JSON.parse(saved)) : DEFAULT_ROLE_PERMISSIONS;
   });
 
   // Admin filter state: allow Admin to view 'all' or narrow down to a specific broker
@@ -288,6 +402,11 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [leads, setLeads] = useState<Lead[]>(() => {
     const saved = localStorage.getItem('aurum_leads');
     return saved ? JSON.parse(saved) : INITIAL_LEADS;
+  });
+
+  const [clients, setClients] = useState<Client[]>(() => {
+    const saved = localStorage.getItem('aurum_clients');
+    return saved ? JSON.parse(saved) : [];
   });
 
   const [funnels, setFunnels] = useState<Funnel[]>(() => {
@@ -315,35 +434,121 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return saved ? JSON.parse(saved) : DEFAULT_SETTINGS;
   });
 
-  const [notifications, setNotifications] = useState<CrmNotification[]>([
-    {
-      id: 'notif-1',
-      title: 'Follow-up Pendente',
-      message: 'Ligação com Dra. Fernanda Siqueira agendada para hoje.',
-      date: 'Hoje, 11:00',
-      read: false,
-      type: 'activity'
-    },
-    {
-      id: 'notif-2',
-      title: 'Aniversariante do Mês',
-      message: 'Carlos Eduardo Mendes faz aniversário este mês (18/08).',
-      date: 'Agosto',
-      read: false,
-      type: 'birthday'
-    },
-    {
-      id: 'notif-3',
-      title: 'Comissão a Receber',
-      message: 'Parcela de R$ 24.000,00 vence em 20/08 (Palazzo Reale).',
-      date: 'Em 6 dias',
-      read: false,
-      type: 'commission'
-    }
-  ]);
+  const [notifications, setNotifications] = useState<CrmNotification[]>([]);
 
-  // Initial Load from Backend API
+  // Integrations: outgoing webhooks & MCP tokens (server-authoritative,
+  // never round-tripped through the generic debounced state sync below)
+  const [outgoingWebhooks, setOutgoingWebhooks] = useState<OutgoingWebhook[]>([]);
+  const [mcpTokens, setMcpTokens] = useState<McpToken[]>([]);
+
+  const createWebhook = async (payload: { name: string; url: string; events: WebhookEvent[] }) => {
+    const webhook = await crmApi.createWebhook(payload);
+    setOutgoingWebhooks(prev => [webhook, ...prev]);
+  };
+
+  const updateWebhook = async (id: string, updates: Partial<Pick<OutgoingWebhook, 'name' | 'url' | 'events' | 'enabled'>>) => {
+    const updated = await crmApi.updateWebhook(id, updates);
+    setOutgoingWebhooks(prev => prev.map(w => (w.id === id ? updated : w)));
+  };
+
+  const deleteWebhook = async (id: string) => {
+    await crmApi.deleteWebhook(id);
+    setOutgoingWebhooks(prev => prev.filter(w => w.id !== id));
+  };
+
+  const testWebhook = async (id: string) => {
+    const result = await crmApi.testWebhook(id);
+    const refreshed = await crmApi.listWebhooks();
+    setOutgoingWebhooks(refreshed);
+    return result;
+  };
+
+  const createMcpToken = async (name: string, scopes: ('read' | 'write')[], expiresInDays?: number) => {
+    const created = await crmApi.createMcpToken(name, scopes, expiresInDays);
+    const { token, ...publicToken } = created;
+    setMcpTokens(prev => [publicToken, ...prev]);
+    return token;
+  };
+
+  const revokeMcpToken = async (id: string) => {
+    await crmApi.revokeMcpToken(id);
+    setMcpTokens(prev => prev.map(t => (t.id === id ? { ...t, revoked: true } : t)));
+  };
+
+  // Resolve any persisted session token on first load
   useEffect(() => {
+    let isMounted = true;
+    if (!authToken) {
+      setIsAuthLoading(false);
+      return;
+    }
+    crmApi.getSession(authToken)
+      .then(({ user }) => {
+        if (!isMounted) return;
+        setUsers(prev => (prev.some(u => u.id === user.id) ? prev.map(u => (u.id === user.id ? user : u)) : [...prev, user]));
+        setCurrentUserId(user.id);
+        setIsAuthenticated(true);
+      })
+      .catch(() => {
+        if (!isMounted) return;
+        localStorage.removeItem('aurum_auth_token');
+        setAuthToken(null);
+        setIsAuthenticated(false);
+      })
+      .finally(() => {
+        if (isMounted) setIsAuthLoading(false);
+      });
+    return () => {
+      isMounted = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const login = async (email: string, password: string) => {
+    const { token, user } = await crmApi.login(email, password);
+    localStorage.setItem('aurum_auth_token', token);
+    setAuthToken(token);
+    // Keep local `users` in sync with whatever the server returns for this
+    // account — otherwise the next debounced full-state sync would push the
+    // stale local copy back and clobber server-side fields (e.g. email).
+    setUsers(prev => (prev.some(u => u.id === user.id) ? prev.map(u => (u.id === user.id ? user : u)) : [...prev, user]));
+    setCurrentUserId(user.id);
+    setIsAuthenticated(true);
+  };
+
+  const firstAccess = async (payload: { userId?: string; email?: string; password: string }) => {
+    const { token, user } = await crmApi.firstAccess(payload);
+    localStorage.setItem('aurum_auth_token', token);
+    setAuthToken(token);
+    setUsers(prev => (prev.some(u => u.id === user.id) ? prev.map(u => (u.id === user.id ? user : u)) : [...prev, user]));
+    setCurrentUserId(user.id);
+    setIsAuthenticated(true);
+  };
+
+  const acceptInvite = async (inviteToken: string, password: string) => {
+    const { token, user } = await crmApi.acceptInvite(inviteToken, password);
+    localStorage.setItem('aurum_auth_token', token);
+    setAuthToken(token);
+    setUsers(prev => (prev.some(u => u.id === user.id) ? prev.map(u => (u.id === user.id ? user : u)) : [...prev, user]));
+    setCurrentUserId(user.id);
+    setIsAuthenticated(true);
+  };
+
+  const logout = () => {
+    if (authToken) crmApi.logout(authToken).catch(() => {});
+    localStorage.removeItem('aurum_auth_token');
+    setAuthToken(null);
+    setIsAuthenticated(false);
+  };
+
+  // Initial Load from Backend API — every /api/state* route now requires a
+  // valid session token, so this can't run (successfully) until auth has
+  // resolved. Depends on isAuthenticated so it re-fires right after login,
+  // instead of the old mount-only effect that ran (and failed with 401)
+  // before any token existed.
+  const hasLoadedFromBackendRef = useRef(false);
+  useEffect(() => {
+    if (!isAuthenticated) return;
     let isMounted = true;
     crmApi.fetchFullState()
       .then(backendState => {
@@ -352,66 +557,82 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (backendState.rolePermissions) setRolePermissions(backendState.rolePermissions);
         if (Array.isArray(backendState.funnels) && backendState.funnels.length > 0) setFunnels(backendState.funnels);
         if (Array.isArray(backendState.leads) && backendState.leads.length > 0) setLeads(backendState.leads);
+        if (Array.isArray(backendState.clients)) setClients(backendState.clients);
         if (Array.isArray(backendState.activities)) setActivities(backendState.activities);
         if (Array.isArray(backendState.contracts)) setContracts(backendState.contracts);
         if (Array.isArray(backendState.commissions)) setCommissions(backendState.commissions);
         if (backendState.settings) setSettings(prev => ({ ...prev, ...backendState.settings }));
         if (Array.isArray(backendState.notifications)) setNotifications(backendState.notifications);
+        if (Array.isArray(backendState.outgoingWebhooks)) setOutgoingWebhooks(backendState.outgoingWebhooks);
+        if (Array.isArray(backendState.mcpTokens)) setMcpTokens(backendState.mcpTokens);
       })
       .catch(err => {
         console.log('Backend sync notice (using local data):', err?.message || err);
+      })
+      .finally(() => {
+        // Only allow the debounced full-state sync to fire after the backend's
+        // own state has been loaded — otherwise a slow fetch loses the race
+        // against the sync debounce and stale localStorage data overwrites
+        // data/db.json, making server-side changes appear to "not sync".
+        hasLoadedFromBackendRef.current = true;
       });
 
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [isAuthenticated]);
 
   // Sync to localStorage
   useEffect(() => {
-    localStorage.setItem('aurum_users', JSON.stringify(users));
+    safeSetLocalStorage('aurum_users', JSON.stringify(users));
   }, [users]);
 
   useEffect(() => {
-    localStorage.setItem('aurum_current_user_id', currentUserId);
+    safeSetLocalStorage('aurum_current_user_id', currentUserId);
   }, [currentUserId]);
 
   useEffect(() => {
-    localStorage.setItem('aurum_role_permissions', JSON.stringify(rolePermissions));
+    safeSetLocalStorage('aurum_role_permissions', JSON.stringify(rolePermissions));
   }, [rolePermissions]);
 
   useEffect(() => {
-    localStorage.setItem('aurum_leads', JSON.stringify(leads));
+    safeSetLocalStorage('aurum_leads', JSON.stringify(leads));
   }, [leads]);
 
   useEffect(() => {
-    localStorage.setItem('aurum_funnels', JSON.stringify(funnels));
+    safeSetLocalStorage('aurum_clients', JSON.stringify(clients));
+  }, [clients]);
+
+  useEffect(() => {
+    safeSetLocalStorage('aurum_funnels', JSON.stringify(funnels));
   }, [funnels]);
 
   useEffect(() => {
-    localStorage.setItem('aurum_activities', JSON.stringify(activities));
+    safeSetLocalStorage('aurum_activities', JSON.stringify(activities));
   }, [activities]);
 
   useEffect(() => {
-    localStorage.setItem('aurum_contracts', JSON.stringify(contracts));
+    safeSetLocalStorage('aurum_contracts', JSON.stringify(contracts));
   }, [contracts]);
 
   useEffect(() => {
-    localStorage.setItem('aurum_commissions', JSON.stringify(commissions));
+    safeSetLocalStorage('aurum_commissions', JSON.stringify(commissions));
   }, [commissions]);
 
   useEffect(() => {
-    localStorage.setItem('aurum_settings', JSON.stringify(settings));
+    safeSetLocalStorage('aurum_settings', JSON.stringify(settings));
   }, [settings]);
 
   // Sync full state to backend debounce
   useEffect(() => {
+    if (!hasLoadedFromBackendRef.current) return;
     const timer = setTimeout(() => {
       crmApi.syncFullState({
         users,
         funnels,
         rolePermissions,
         leads,
+        clients,
         activities,
         contracts,
         commissions,
@@ -421,7 +642,7 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }, 1500);
 
     return () => clearTimeout(timer);
-  }, [users, funnels, rolePermissions, leads, activities, contracts, commissions, settings, notifications]);
+  }, [users, funnels, rolePermissions, leads, clients, activities, contracts, commissions, settings, notifications]);
 
   // Global keyboard shortcuts (⌘K or Ctrl+K)
   useEffect(() => {
@@ -454,9 +675,20 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // User-scoped data calculation: each user sees only their data unless permitted (Admin or canViewAll)
   const canViewAll = hasPermission('canViewAllLeads');
   const canViewAllComms = hasPermission('canViewAllCommissions');
+  const canViewTeam = hasPermission('canViewTeamLeads');
+
+  // Ids of everyone this user supervises (their `managerId` points here) —
+  // only relevant when canViewTeamLeads is on and canViewAllLeads is off.
+  const teamMemberIds = useMemo(() => {
+    if (canViewAll || !canViewTeam) return new Set<string>();
+    return new Set(users.filter(u => u.managerId === currentUser.id).map(u => u.id));
+  }, [users, canViewAll, canViewTeam, currentUser.id]);
 
   const visibleLeads = useMemo(() => {
     if (!canViewAll) {
+      if (canViewTeam && teamMemberIds.size > 0) {
+        return leads.filter(l => l.brokerId === currentUser.id || l.brokerName === currentUser.name || (l.brokerId && teamMemberIds.has(l.brokerId)));
+      }
       // Corretor vê estritamente os seus leads
       return leads.filter(l => l.brokerId === currentUser.id || l.brokerName === currentUser.name || (!l.brokerId && currentUser.role === 'admin'));
     }
@@ -465,37 +697,51 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return leads.filter(l => l.brokerId === adminFilterBrokerId);
     }
     return leads;
-  }, [leads, canViewAll, currentUser, adminFilterBrokerId]);
+  }, [leads, canViewAll, canViewTeam, teamMemberIds, currentUser, adminFilterBrokerId]);
 
   const visibleActivities = useMemo(() => {
     if (!canViewAll) {
+      if (canViewTeam && teamMemberIds.size > 0) {
+        return activities.filter(a => a.brokerId === currentUser.id || a.brokerName === currentUser.name || (a.brokerId && teamMemberIds.has(a.brokerId)));
+      }
       return activities.filter(a => a.brokerId === currentUser.id || a.brokerName === currentUser.name);
     }
     if (adminFilterBrokerId !== 'all') {
       return activities.filter(a => a.brokerId === adminFilterBrokerId);
     }
     return activities;
-  }, [activities, canViewAll, currentUser, adminFilterBrokerId]);
+  }, [activities, canViewAll, canViewTeam, teamMemberIds, currentUser, adminFilterBrokerId]);
 
   const visibleContracts = useMemo(() => {
     if (!canViewAll) {
+      // Mirrors visibleLeads/visibleActivities' team-scope path — previously
+      // contracts only had the binary own-vs-all split, so a manager with
+      // "ver leads da equipe" still couldn't see their team's contracts.
+      if (canViewTeam && teamMemberIds.size > 0) {
+        return contracts.filter(c => c.brokerId === currentUser.id || c.brokerName === currentUser.name || (c.brokerId && teamMemberIds.has(c.brokerId)));
+      }
       return contracts.filter(c => c.brokerId === currentUser.id || c.brokerName === currentUser.name);
     }
     if (adminFilterBrokerId !== 'all') {
       return contracts.filter(c => c.brokerId === adminFilterBrokerId);
     }
     return contracts;
-  }, [contracts, canViewAll, currentUser, adminFilterBrokerId]);
+  }, [contracts, canViewAll, canViewTeam, teamMemberIds, currentUser, adminFilterBrokerId]);
 
   const visibleCommissions = useMemo(() => {
     if (!canViewAllComms) {
+      // Same team-scope extension as visibleContracts above, gated by
+      // canViewTeam (commissions don't have their own separate team flag).
+      if (canViewTeam && teamMemberIds.size > 0) {
+        return commissions.filter(c => c.brokerId === currentUser.id || c.brokerName === currentUser.name || (c.brokerId && teamMemberIds.has(c.brokerId)));
+      }
       return commissions.filter(c => c.brokerId === currentUser.id || c.brokerName === currentUser.name);
     }
     if (adminFilterBrokerId !== 'all') {
       return commissions.filter(c => c.brokerId === adminFilterBrokerId);
     }
     return commissions;
-  }, [commissions, canViewAllComms, currentUser, adminFilterBrokerId]);
+  }, [commissions, canViewAllComms, canViewTeam, teamMemberIds, currentUser, adminFilterBrokerId]);
 
   const triggerConfetti = () => {
     try {
@@ -510,20 +756,68 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
+  // Finds an existing Client by normalized phone (dedup key), or creates one
+  // — used by addLead and importLeadsBulk so the same buyer is recognized
+  // across negotiations instead of siloed per-lead. Mutates `clients` via
+  // setter but returns the resolved client synchronously (from a ref-backed
+  // read) so the caller can link the new Lead to it in the same tick.
+  const clientsRef = useRef(clients);
+  clientsRef.current = clients;
+
+  const findOrCreateClient = (name: string, phone: string, email?: string): Client => {
+    const normalized = normalizePhoneKey(phone);
+    const existing = normalized ? clientsRef.current.find(c => normalizePhoneKey(c.phone) === normalized) : undefined;
+    if (existing) {
+      if (email && !existing.email) {
+        const patched = { ...existing, email };
+        clientsRef.current = clientsRef.current.map(c => (c.id === existing.id ? patched : c));
+        setClients(clientsRef.current);
+        return patched;
+      }
+      return existing;
+    }
+    const client: Client = {
+      id: `client-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      name,
+      phone,
+      email,
+      createdAt: new Date().toISOString()
+    };
+    clientsRef.current = [client, ...clientsRef.current];
+    setClients(clientsRef.current);
+    return client;
+  };
+
+  const findClientMatch = (phone: string): { client: Client; leadCount: number } | null => {
+    const normalized = normalizePhoneKey(phone);
+    if (!normalized) return null;
+    const client = clients.find(c => normalizePhoneKey(c.phone) === normalized);
+    if (!client) return null;
+    return { client, leadCount: leads.filter(l => l.clientId === client.id).length };
+  };
+
+  const getClientLeads = (clientId: string | undefined): Lead[] => {
+    if (!clientId) return [];
+    return leads.filter(l => l.clientId === clientId);
+  };
+
   const addLead = (leadData: Omit<Lead, 'id' | 'createdAt' | 'history'>): Lead => {
     const assignedId = leadData.brokerId || currentUser.id;
     const assignedUser = users.find(u => u.id === assignedId) || currentUser;
+    const client = findOrCreateClient(leadData.name, leadData.phone, leadData.email);
+    const newId = `lead-${Date.now()}`;
 
     const newLead: Lead = {
       ...leadData,
-      id: `lead-${Date.now()}`,
+      id: newId,
+      clientId: leadData.clientId || client.id,
       brokerId: assignedId,
       brokerName: assignedUser.name,
       createdAt: new Date().toISOString().split('T')[0],
       history: [
         {
           id: `h-${Date.now()}`,
-          leadId: `lead-${Date.now()}`,
+          leadId: newId,
           type: 'note',
           description: `Lead cadastrado e atribuído a ${assignedUser.name}.`,
           date: new Date().toLocaleString('pt-BR'),
@@ -533,6 +827,17 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
     setLeads(prev => [newLead, ...prev]);
     return newLead;
+  };
+
+  const importLeadsBulk = async (rows: ImportLeadRow[]): Promise<ImportResult> => {
+    const result = await crmApi.importLeads(rows);
+    // The server created the leads/clients directly in its own dbState —
+    // pull the fresh full state back down rather than trying to reconstruct
+    // 1..2000 rows' worth of ids/history locally.
+    const backendState = await crmApi.fetchFullState();
+    if (Array.isArray(backendState.leads)) setLeads(backendState.leads);
+    if (Array.isArray(backendState.clients)) setClients(backendState.clients);
+    return { created: result.created, linkedToExistingClient: result.linkedToExistingClient, errors: result.errors };
   };
 
   const updateLead = (id: string, updates: Partial<Lead>) => {
@@ -713,7 +1018,7 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const newAct: Activity = {
       ...activityData,
-      id: `act-${Date.now()}`,
+      id: `act-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
       brokerId: assignedId,
       brokerName: assignedUser.name,
       completed: false,
@@ -983,6 +1288,10 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         activeFunnelId,
         setActiveFunnelId,
         leads,
+        clients,
+        findClientMatch,
+        getClientLeads,
+        importLeadsBulk,
         funnels,
         activities,
         contracts,
@@ -1009,10 +1318,19 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setSaleModalLead,
         isGoalModalOpen,
         setIsGoalModalOpen,
+        isMyProfileModalOpen,
+        setIsMyProfileModalOpen,
         isCommandPaletteOpen,
         setIsCommandPaletteOpen,
-        isRoleSwitcherOpen,
-        setIsRoleSwitcherOpen,
+        isMobileSidebarOpen,
+        setIsMobileSidebarOpen,
+        isAuthenticated,
+        isAuthLoading,
+        authToken,
+        login,
+        firstAccess,
+        acceptInvite,
+        logout,
         isWhatsAppModalOpen,
         setIsWhatsAppModalOpen,
         whatsAppModalLead,
@@ -1062,7 +1380,15 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         clearAllData,
         markNotificationRead,
         markAllNotificationsRead,
-        triggerConfetti
+        triggerConfetti,
+        outgoingWebhooks,
+        createWebhook,
+        updateWebhook,
+        deleteWebhook,
+        testWebhook,
+        mcpTokens,
+        createMcpToken,
+        revokeMcpToken
       }}
     >
       {children}

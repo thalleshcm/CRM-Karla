@@ -20,6 +20,29 @@ export const formatPhone = (phone: string | undefined): string => {
   return phone;
 };
 
+// Normalizes a Brazilian phone to a stable dedup key (55+DDD+number),
+// mirroring server.ts's formatBrazilPhone so a match found client-side
+// (e.g. while typing in NewLeadModal) agrees with what the backend computes
+// during import/webhook dedup.
+export const normalizePhoneKey = (rawPhone: string | undefined): string => {
+  let phone = (rawPhone || '').replace(/\D/g, '');
+  if (!phone) return '';
+
+  if (phone.length >= 12 && phone.startsWith('55')) return phone;
+  if (phone.length === 11) return `55${phone}`;
+
+  if (phone.length === 10) {
+    const ddd = phone.substring(0, 2);
+    const firstDigit = phone.substring(2, 3);
+    if (firstDigit === '8') phone = `${ddd}9${phone.substring(2)}`;
+    return `55${phone}`;
+  }
+
+  if (phone.length === 9) return `5511${phone}`;
+
+  return phone.startsWith('55') ? phone : `55${phone}`;
+};
+
 export const cleanPhoneForWhatsApp = (phone: string | undefined): string => {
   if (!phone) return '';
   let cleaned = phone.replace(/\D/g, '');
@@ -65,6 +88,25 @@ export const formatDateTimePtBR = (dateTimeStr: string | undefined): string => {
   } catch {
     return dateTimeStr;
   }
+};
+
+/**
+ * Timeline history entries are stamped with `new Date().toLocaleString('pt-BR')`
+ * (e.g. "23/08/2026, 09:31:56"), which `Date.parse`/`new Date()` cannot read —
+ * they silently return Invalid Date. This parses that format, falling back to
+ * the native parser for ISO/other date strings.
+ */
+export const parseFlexibleDate = (dateStr: string | undefined): number => {
+  if (!dateStr) return NaN;
+  const ptBrMatch = dateStr.match(/^(\d{2})\/(\d{2})\/(\d{4})(?:,?\s+(\d{2}):(\d{2})(?::(\d{2}))?)?/);
+  if (ptBrMatch) {
+    const [, day, month, year, hour = '0', minute = '0', second = '0'] = ptBrMatch;
+    return new Date(
+      Number(year), Number(month) - 1, Number(day),
+      Number(hour), Number(minute), Number(second)
+    ).getTime();
+  }
+  return Date.parse(dateStr);
 };
 
 export const getMonthNamePtBR = (monthIndex: number): string => {
