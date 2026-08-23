@@ -45,10 +45,30 @@ export const normalizePhoneKey = (rawPhone: string | undefined): string => {
   return phone.startsWith('55') ? phone : `55${phone}`;
 };
 
-// Kept as a thin alias rather than a second, drifting implementation — this
-// used to have its own (incomplete) normalization logic, which produced
-// invalid wa.me links for phones that normalizePhoneKey handles correctly.
-export const cleanPhoneForWhatsApp = normalizePhoneKey;
+// Shares the 10-digit "insert the missing mobile 9th digit" fix-up with
+// normalizePhoneKey, but deliberately does NOT apply normalizePhoneKey's
+// bare-9-digit -> DDD-11 guess: that fallback is fine for dedup (an internal
+// grouping key), but here it would produce a syntactically valid wa.me link
+// that silently messages an unrelated real person in the guessed area code
+// instead of failing visibly. A bare 9-digit phone (no area code) is
+// returned as-is, same as before this normalization was ever added.
+export const cleanPhoneForWhatsApp = (phone: string | undefined): string => {
+  if (!phone) return '';
+  let cleaned = phone.replace(/\D/g, '');
+  if (cleaned.startsWith('55') && cleaned.length > 11) {
+    return cleaned;
+  }
+  if (cleaned.length === 10) {
+    const ddd = cleaned.substring(0, 2);
+    const firstDigit = cleaned.substring(2, 3);
+    if (['6', '7', '8', '9'].includes(firstDigit)) cleaned = `${ddd}9${cleaned.substring(2)}`;
+    return `55${cleaned}`;
+  }
+  if (cleaned.length === 11) {
+    return `55${cleaned}`;
+  }
+  return cleaned;
+};
 
 export const getWhatsAppLink = (phone: string | undefined, message?: string): string => {
   const clean = cleanPhoneForWhatsApp(phone);

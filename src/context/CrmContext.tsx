@@ -1110,37 +1110,41 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     setContracts(prev => [newContract, ...prev]);
 
-    // Generate installment commission entries
-    const numInstallments = Math.max(1, saleData.installmentsCount || 1);
-    const installmentAmount = brokerCommVal / numInstallments;
-    const installmentBonus = (saleData.splitBonus?.broker || 0) / numInstallments;
-    const baseDate = new Date(saleData.firstDueDate || saleData.closedAt);
+    // A contract saved as 'cancelado' shouldn't generate payable commission
+    // installments at all — those would be real 'a_receber' records for a
+    // deal declared cancelled from the very first save.
+    if (newContract.status !== 'cancelado') {
+      const numInstallments = Math.max(1, saleData.installmentsCount || 1);
+      const installmentAmount = brokerCommVal / numInstallments;
+      const installmentBonus = (saleData.splitBonus?.broker || 0) / numInstallments;
+      const baseDate = new Date(saleData.firstDueDate || saleData.closedAt);
 
-    const generatedCommissions: Commission[] = [];
-    for (let i = 1; i <= numInstallments; i++) {
-      const dueDate = new Date(baseDate);
-      dueDate.setMonth(dueDate.getMonth() + (i - 1));
-      
-      generatedCommissions.push({
-        id: `comm-${Date.now()}-${i}`,
-        contractId: contractId,
-        brokerId: assignedBrokerId,
-        brokerName: assignedUser.name,
-        enterpriseName: saleData.enterpriseName,
-        clientName: saleData.clientName,
-        recipientRole: 'corretor',
-        installmentNumber: i,
-        totalInstallments: numInstallments,
-        dueDate: dueDate.toISOString().split('T')[0],
-        paymentDate: saleData.isCompletedDirectly ? saleData.closedAt : undefined,
-        amount: installmentAmount,
-        bonusAmount: installmentBonus > 0 ? installmentBonus : undefined,
-        status: saleData.isCompletedDirectly ? 'recebido' : 'a_receber',
-        notes: `Parcela ${i}/${numInstallments} - Comissão de venda (${assignedUser.name})`
-      });
+      const generatedCommissions: Commission[] = [];
+      for (let i = 1; i <= numInstallments; i++) {
+        const dueDate = new Date(baseDate);
+        dueDate.setMonth(dueDate.getMonth() + (i - 1));
+
+        generatedCommissions.push({
+          id: `comm-${Date.now()}-${i}`,
+          contractId: contractId,
+          brokerId: assignedBrokerId,
+          brokerName: assignedUser.name,
+          enterpriseName: saleData.enterpriseName,
+          clientName: saleData.clientName,
+          recipientRole: 'corretor',
+          installmentNumber: i,
+          totalInstallments: numInstallments,
+          dueDate: dueDate.toISOString().split('T')[0],
+          paymentDate: saleData.isCompletedDirectly ? saleData.closedAt : undefined,
+          amount: installmentAmount,
+          bonusAmount: installmentBonus > 0 ? installmentBonus : undefined,
+          status: saleData.isCompletedDirectly ? 'recebido' : 'a_receber',
+          notes: `Parcela ${i}/${numInstallments} - Comissão de venda (${assignedUser.name})`
+        });
+      }
+
+      setCommissions(prev => [...generatedCommissions, ...prev]);
     }
-
-    setCommissions(prev => [...generatedCommissions, ...prev]);
 
     // A contract explicitly saved as 'cancelado' shouldn't advance the lead's
     // stage or trigger the win celebration — only signed/completed sales do.

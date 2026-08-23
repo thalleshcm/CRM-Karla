@@ -111,7 +111,12 @@ export const LeadDetailModal: React.FC = () => {
   const [birthday, setBirthday] = useState('');
   const [region, setRegion] = useState('');
   const [estimatedValue, setEstimatedValue] = useState<number>(0);
-  const [downPayment, setDownPayment] = useState<number>(0);
+  // Unlike estimatedValue (a required field, always some concrete number —
+  // 0 genuinely is its "not filled in" state), downPayment is optional on
+  // Lead, so undefined ("never entered") is meaningfully different from an
+  // explicit 0 (a 100%-financed deal) — kept nullable so the summary card
+  // can tell the two apart instead of showing "R$ 0,00" for both.
+  const [downPayment, setDownPayment] = useState<number | undefined>(undefined);
   const [paymentMethod, setPaymentMethod] = useState('');
   const [origin, setOrigin] = useState<LeadOrigin>('Indicação');
   const [notes, setNotes] = useState('');
@@ -214,7 +219,7 @@ export const LeadDetailModal: React.FC = () => {
     setBirthday(selectedLead.birthday || '');
     setRegion(selectedLead.region || '');
     setEstimatedValue(selectedLead.estimatedValue || 0);
-    setDownPayment(selectedLead.downPayment || 0);
+    setDownPayment(selectedLead.downPayment);
     setPaymentMethod(selectedLead.paymentMethod || '');
     setOrigin(selectedLead.origin || 'Indicação');
     setNotes(selectedLead.notes || '');
@@ -1320,7 +1325,7 @@ export const LeadDetailModal: React.FC = () => {
               </div>
               <div>
                 <span className="text-slate-400 block">Entrada</span>
-                <strong className="text-slate-900">{formatCurrency(downPayment)}</strong>
+                <strong className="text-slate-900">{downPayment !== undefined ? formatCurrency(downPayment) : '—'}</strong>
               </div>
               <div>
                 <span className="text-slate-400 block">Pagamento</span>

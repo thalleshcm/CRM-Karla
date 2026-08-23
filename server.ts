@@ -774,16 +774,31 @@ app.post('/api/state/sync', requireAuth, (req, res) => {
     const nextUsersById = new Map((incoming.users as UserProfile[]).map(u => [u.id, u]));
     const resolvedUsers: UserProfile[] = [];
 
+    // Tracked as a running count (not recomputed from the untouched
+    // dbState.users snapshot on every iteration) so a single batched sync
+    // request can't remove every admin at once — each approved deletion
+    // decrements it before the next admin in the same request is checked.
+    let remainingActiveAdmins = countActiveAdmins(dbState.users);
+
     // Deletions: keep any user the requester wasn't allowed to remove.
     for (const prevUser of dbState.users) {
       if (nextUsersById.has(prevUser.id)) continue;
-      const isLastActiveAdmin = prevUser.role === 'admin' && dbState.users.filter(u => u.role === 'admin' && u.active).length <= 1;
+      const isLastActiveAdmin = prevUser.role === 'admin' && prevUser.active && remainingActiveAdmins <= 1;
       if (!requesterCanManageTeam || isLastActiveAdmin) {
         resolvedUsers.push(prevUser);
         continue;
       }
+      if (prevUser.role === 'admin' && prevUser.active) remainingActiveAdmins--;
       logAudit(requester, 'user_deleted', prevUser.name);
     }
+
+    // Fields a user may change on their own row without canManageTeam — a
+    // profile-editing capability every user needs (MyProfileModal), not a
+    // team-management one. Anything else on the own-row path (active,
+    // managerId, assignedLeadCount, role/roleLabel) stays server-authoritative
+    // so a stale/compromised client can't silently reactivate itself after an
+    // admin deactivates it, or grant itself a manager-based visibility change.
+    const SELF_EDITABLE_FIELDS: (keyof UserProfile)[] = ['name', 'phone', 'creci', 'avatarColor', 'initials'];
 
     for (const nextUser of incoming.users as UserProfile[]) {
       const prev = prevUsersById.get(nextUser.id);
@@ -807,10 +822,16 @@ app.post('/api/state/sync', requireAuth, (req, res) => {
         continue;
       }
 
-      const merged = { ...nextUser };
-      if ((merged.role !== prev.role || merged.roleLabel !== prev.roleLabel) && requester.role !== 'admin') {
-        merged.role = prev.role;
-        merged.roleLabel = prev.roleLabel;
+      let merged: UserProfile;
+      if (isOwnRow && !requesterCanManageTeam) {
+        merged = { ...prev };
+        for (const key of SELF_EDITABLE_FIELDS) (merged as any)[key] = nextUser[key];
+      } else {
+        merged = { ...nextUser };
+        if ((merged.role !== prev.role || merged.roleLabel !== prev.roleLabel) && requester.role !== 'admin') {
+          merged.role = prev.role;
+          merged.roleLabel = prev.roleLabel;
+        }
       }
 
       if (prev.active !== merged.active) {
@@ -1418,7 +1439,7 @@ app.put('/api/users/:id', requireAuth, requirePermission('canManageTeam'), (req,
 
 app.delete('/api/users/:id', requireAuth, requirePermission('canManageTeam'), (req, res) => {
   const target = dbState.users.find(u => u.id === req.params.id);
-  if (target?.role === 'admin' && dbState.users.filter(u => u.role === 'admin' && u.active).length <= 1) {
+  if (target?.role === 'admin' && target.active && countActiveAdmins(dbState.users) <= 1) {
     return res.status(400).json({ error: 'Não é possível remover o último administrador ativo.' });
   }
 
@@ -1659,6 +1680,10 @@ function requireAdmin(req: express.Request, res: express.Response, next: express
 
 function userHasPermission(user: UserProfile, key: keyof RolePermissions): boolean {
   return !!dbState.rolePermissions[user.role]?.permissions[key];
+}
+
+function countActiveAdmins(users: UserProfile[]): number {
+  return users.filter(u => u.role === 'admin' && u.active).length;
 }
 
 // Generic permission gate, for actions that should follow the granular
