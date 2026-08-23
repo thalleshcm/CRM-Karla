@@ -34,7 +34,9 @@ export const normalizePhoneKey = (rawPhone: string | undefined): string => {
   if (phone.length === 10) {
     const ddd = phone.substring(0, 2);
     const firstDigit = phone.substring(2, 3);
-    if (firstDigit === '8') phone = `${ddd}9${phone.substring(2)}`;
+    // Old 8-digit mobile numbers (pre-2012, no leading 9) started with
+    // 6/7/8/9 depending on the carrier — not just 8.
+    if (['6', '7', '8', '9'].includes(firstDigit)) phone = `${ddd}9${phone.substring(2)}`;
     return `55${phone}`;
   }
 
@@ -43,17 +45,10 @@ export const normalizePhoneKey = (rawPhone: string | undefined): string => {
   return phone.startsWith('55') ? phone : `55${phone}`;
 };
 
-export const cleanPhoneForWhatsApp = (phone: string | undefined): string => {
-  if (!phone) return '';
-  let cleaned = phone.replace(/\D/g, '');
-  if (cleaned.startsWith('55') && cleaned.length > 11) {
-    return cleaned;
-  }
-  if (cleaned.length === 10 || cleaned.length === 11) {
-    return `55${cleaned}`;
-  }
-  return cleaned;
-};
+// Kept as a thin alias rather than a second, drifting implementation — this
+// used to have its own (incomplete) normalization logic, which produced
+// invalid wa.me links for phones that normalizePhoneKey handles correctly.
+export const cleanPhoneForWhatsApp = normalizePhoneKey;
 
 export const getWhatsAppLink = (phone: string | undefined, message?: string): string => {
   const clean = cleanPhoneForWhatsApp(phone);

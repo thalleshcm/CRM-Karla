@@ -463,8 +463,14 @@ export const LeadDetailModal: React.FC = () => {
     };
 
     const existingContractId = selectedLead.contractDetails?.contractId;
-    const existingContract = existingContractId ? contracts.find(c => c.id === existingContractId) : undefined;
-    let linkedContractId = existingContractId;
+    // Falls back to matching by leadId when contractDetails predates the
+    // contractId field (old data written before Contract records existed for
+    // this flow) — otherwise every re-save of one of those older "sold"
+    // leads would create a brand-new duplicate Contract + commission set.
+    const existingContract = existingContractId
+      ? contracts.find(c => c.id === existingContractId)
+      : contracts.find(c => c.leadId === selectedLead.id);
+    let linkedContractId = existingContractId || existingContract?.id;
 
     if (existingContract) {
       // Update the linked Contract's metadata — never regenerate commission
@@ -503,7 +509,8 @@ export const LeadDetailModal: React.FC = () => {
         closedAt: new Date().toISOString().split('T')[0],
         firstDueDate: commFirstDueDate || new Date().toISOString().split('T')[0],
         installmentsCount: installmentsNum,
-        isCompletedDirectly: isCommissionCompleted
+        isCompletedDirectly: isCommissionCompleted,
+        status: contractStatusMap[contractStatus]
       });
       linkedContractId = newContract.id;
     }
@@ -1309,11 +1316,11 @@ export const LeadDetailModal: React.FC = () => {
               </div>
               <div>
                 <span className="text-slate-400 block">Valor</span>
-                <strong className="text-slate-900">{estimatedValue ? formatCurrency(estimatedValue) : '—'}</strong>
+                <strong className="text-slate-900">{formatCurrency(estimatedValue)}</strong>
               </div>
               <div>
                 <span className="text-slate-400 block">Entrada</span>
-                <strong className="text-slate-900">{downPayment ? formatCurrency(downPayment) : '—'}</strong>
+                <strong className="text-slate-900">{formatCurrency(downPayment)}</strong>
               </div>
               <div>
                 <span className="text-slate-400 block">Pagamento</span>

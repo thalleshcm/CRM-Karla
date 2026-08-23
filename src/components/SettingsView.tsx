@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Header } from './Header';
 import { useCrm } from '../context/CrmContext';
 import { RolePermissions } from '../types';
@@ -96,6 +96,19 @@ export const SettingsView: React.FC = () => {
     }
     window.history.replaceState(window.history.state, '', url);
   };
+
+  // Re-check on every render (not just at mount) — if an admin revokes the
+  // permission for the section a user currently has open (e.g. their own
+  // role config changing mid-session), boot them back to the grid instead
+  // of leaving a now-unauthorized section rendered and interactive.
+  useEffect(() => {
+    if (!activeSection) return;
+    const requiredPermission = SECTION_PERMISSION[activeSection];
+    if (requiredPermission && !hasPermission(requiredPermission)) {
+      navigateToSection(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSection, hasPermission]);
 
   const ActiveComponent = activeSection ? SECTION_COMPONENTS[activeSection] : null;
   const meta = activeSection ? SECTION_META[activeSection] : null;

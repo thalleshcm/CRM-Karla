@@ -65,9 +65,14 @@ export const EvolutionSection: React.FC = () => {
   const handleTestEvolutionConnection = async () => {
     setEvoTesting(true);
     setEvoStatus(null);
-    const res = await crmApi.checkWhatsAppStatus();
-    setEvoStatus(res);
-    setEvoTesting(false);
+    try {
+      const res = await crmApi.checkWhatsAppStatus();
+      setEvoStatus(res);
+    } catch (err: any) {
+      setEvoStatus({ connected: false, message: err?.message || 'Falha ao testar conexão.' });
+    } finally {
+      setEvoTesting(false);
+    }
   };
 
   const stopQrCountdown = () => {
@@ -104,53 +109,67 @@ export const EvolutionSection: React.FC = () => {
     }
     setEvoTesting(true);
     setEvoStatus(null);
-    const result = await crmApi.createWhatsAppInstance(evoPhoneNumber.trim() || undefined);
+    try {
+      const result = await crmApi.createWhatsAppInstance(evoPhoneNumber.trim() || undefined);
 
-    if (result.success) {
-      if (result.instanceToken) {
-        setEvoInstanceToken(result.instanceToken);
+      if (result.success) {
+        if (result.instanceToken) {
+          setEvoInstanceToken(result.instanceToken);
+        }
+        if (result.qrcode) {
+          setEvoQrCode(result.qrcode);
+          startQrCountdown();
+        }
+        setEvoStatus({
+          connected: false,
+          message: `Instância "${evoInstance}" criada no servidor Evolution API! Escaneie o QR Code para parear com o WhatsApp.`
+        });
+        showNotification(`Instância "${evoInstance}" criada com sucesso!`);
+      } else {
+        setEvoStatus({
+          connected: false,
+          message: `Falha ao criar instância: ${result.error || 'Erro desconhecido'}`
+        });
       }
-      if (result.qrcode) {
-        setEvoQrCode(result.qrcode);
-        startQrCountdown();
-      }
-      setEvoStatus({
-        connected: false,
-        message: `Instância "${evoInstance}" criada no servidor Evolution API! Escaneie o QR Code para parear com o WhatsApp.`
-      });
-      showNotification(`Instância "${evoInstance}" criada com sucesso!`);
-    } else {
-      setEvoStatus({
-        connected: false,
-        message: `Falha ao criar instância: ${result.error || 'Erro desconhecido'}`
-      });
+    } catch (err: any) {
+      setEvoStatus({ connected: false, message: err?.message || 'Falha ao criar instância.' });
+    } finally {
+      setEvoTesting(false);
     }
-    setEvoTesting(false);
   };
 
   const handleFetchEvolutionQr = async (isAutoRefresh = false) => {
     setEvoTesting(true);
     if (!isAutoRefresh) setEvoStatus(null);
-    const data = await crmApi.getWhatsAppQrCode();
-    if (data.base64) {
-      setEvoQrCode(data.base64);
-      if (data.pairingCode) setEvoPairingCode(data.pairingCode);
-      setEvoStatus({
-        connected: false,
-        message: 'Escaneie o QR Code abaixo com o WhatsApp do seu aparelho para conectar a instância.'
-      });
-      startQrCountdown();
-    } else {
-      setEvoStatus({
-        connected: false,
-        message: data.message || data.error || 'QR Code não disponível (a instância pode já estar conectada).'
-      });
+    try {
+      const data = await crmApi.getWhatsAppQrCode();
+      if (data.base64) {
+        setEvoQrCode(data.base64);
+        if (data.pairingCode) setEvoPairingCode(data.pairingCode);
+        setEvoStatus({
+          connected: false,
+          message: 'Escaneie o QR Code abaixo com o WhatsApp do seu aparelho para conectar a instância.'
+        });
+        startQrCountdown();
+      } else {
+        setEvoStatus({
+          connected: false,
+          message: data.message || data.error || 'QR Code não disponível (a instância pode já estar conectada).'
+        });
+        if (!isAutoRefresh) {
+          setEvoQrCode(null);
+          stopQrCountdown();
+        }
+      }
+    } catch (err: any) {
+      setEvoStatus({ connected: false, message: err?.message || 'Falha ao buscar QR Code.' });
       if (!isAutoRefresh) {
         setEvoQrCode(null);
         stopQrCountdown();
       }
+    } finally {
+      setEvoTesting(false);
     }
-    setEvoTesting(false);
   };
 
   const handleLogoutInstance = () => {
@@ -549,7 +568,11 @@ export const WebhooksSection: React.FC = () => {
   };
 
   const handleToggleWebhookEnabled = async (id: string, enabled: boolean) => {
-    await updateWebhook(id, { enabled: !enabled });
+    try {
+      await updateWebhook(id, { enabled: !enabled });
+    } catch (err: any) {
+      showNotification(err?.message || 'Falha ao atualizar webhook.', 'error');
+    }
   };
 
   const handleDeleteWebhook = (id: string, name: string) => {
@@ -559,8 +582,12 @@ export const WebhooksSection: React.FC = () => {
       confirmLabel: 'Remover',
       tone: 'default',
       onConfirm: async () => {
-        await deleteWebhook(id);
-        showNotification('Webhook removido.');
+        try {
+          await deleteWebhook(id);
+          showNotification('Webhook removido.');
+        } catch (err: any) {
+          showNotification(err?.message || 'Falha ao remover webhook.', 'error');
+        }
       }
     });
   };
@@ -900,8 +927,12 @@ export const McpSection: React.FC = () => {
       confirmLabel: 'Revogar',
       tone: 'default',
       onConfirm: async () => {
-        await revokeMcpToken(id);
-        showNotification('Token revogado.');
+        try {
+          await revokeMcpToken(id);
+          showNotification('Token revogado.');
+        } catch (err: any) {
+          showNotification(err?.message || 'Falha ao revogar token.', 'error');
+        }
       }
     });
   };

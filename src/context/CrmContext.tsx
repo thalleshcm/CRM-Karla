@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useMemo, useRef } from 'react';
+import React, { createContext, useContext, useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import confetti from 'canvas-confetti';
 import { crmApi } from '../services/api';
 import {
@@ -788,13 +788,16 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return client;
   };
 
-  const findClientMatch = (phone: string): { client: Client; leadCount: number } | null => {
-    const normalized = normalizePhoneKey(phone);
-    if (!normalized) return null;
-    const client = clients.find(c => normalizePhoneKey(c.phone) === normalized);
-    if (!client) return null;
-    return { client, leadCount: leads.filter(l => l.clientId === client.id).length };
-  };
+  const findClientMatch = useCallback(
+    (phone: string): { client: Client; leadCount: number } | null => {
+      const normalized = normalizePhoneKey(phone);
+      if (!normalized) return null;
+      const client = clients.find(c => normalizePhoneKey(c.phone) === normalized);
+      if (!client) return null;
+      return { client, leadCount: leads.filter(l => l.clientId === client.id).length };
+    },
+    [clients, leads]
+  );
 
   const getClientLeads = (clientId: string | undefined): Lead[] => {
     if (!clientId) return [];
@@ -1060,6 +1063,7 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     splitBonus?: CommissionSplitBonus;
     installmentsCount: number;
     isCompletedDirectly?: boolean;
+    status?: 'assinado' | 'concluido' | 'cancelado';
     notes?: string;
   }): Contract => {
     const totalCommVal = (saleData.value * saleData.commissionPercent) / 100;
@@ -1085,7 +1089,7 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       value: saleData.value,
       closedAt: saleData.closedAt,
       firstDueDate: saleData.firstDueDate || saleData.closedAt,
-      status: saleData.isCompletedDirectly ? 'concluido' : 'assinado',
+      status: saleData.status || (saleData.isCompletedDirectly ? 'concluido' : 'assinado'),
       commissionPercent: saleData.commissionPercent,
       brokerCommissionPercent: effectiveBrokerPerc,
       splitPercents: saleData.splitPercents,
@@ -1138,12 +1142,14 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     setCommissions(prev => [...generatedCommissions, ...prev]);
 
-    // If lead exists, move to 'venda_concluida'
-    if (saleData.leadId) {
-      moveLeadStage(saleData.leadId, 'venda_concluida');
+    // A contract explicitly saved as 'cancelado' shouldn't advance the lead's
+    // stage or trigger the win celebration — only signed/completed sales do.
+    if (newContract.status !== 'cancelado') {
+      if (saleData.leadId) {
+        moveLeadStage(saleData.leadId, 'venda_concluida');
+      }
+      triggerConfetti();
     }
-
-    triggerConfetti();
     return newContract;
   };
 

@@ -19,7 +19,8 @@ import {
   Download,
   ChevronLeft,
   ChevronRight,
-  ScrollText
+  ScrollText,
+  X
 } from 'lucide-react';
 import { useCrm } from '../../context/CrmContext';
 import { crmApi } from '../../services/api';
@@ -27,6 +28,7 @@ import { MODULES_LIST } from '../../data/initialData';
 import { UserRole, ViewType, RolePermissions, Invite, UserProfile, AuditLogEntry } from '../../types';
 import { useSettingsNotification } from './SettingsNotification';
 import { useConfirmDanger } from '../ConfirmDangerModal';
+import { useEscapeToClose } from '../../hooks/useEscapeToClose';
 
 // Which granular action permissions apply to each module, and how to label them.
 // Additive to the module visibility toggle — this is what turns "só oculta módulos"
@@ -351,6 +353,12 @@ export const TeamSection: React.FC = () => {
   const [reassignForUser, setReassignForUser] = useState<UserProfile | null>(null);
   const [reassignTargetId, setReassignTargetId] = useState('');
 
+  const [resetPasswordFor, setResetPasswordFor] = useState<UserProfile | null>(null);
+  const [resetPasswordValue, setResetPasswordValue] = useState('');
+  const [resetPasswordConfirm, setResetPasswordConfirm] = useState('');
+  const [resetPasswordError, setResetPasswordError] = useState('');
+  const [isResettingPassword, setIsResettingPassword] = useState(false);
+
   const [userSearch, setUserSearch] = useState('');
   const [roleFilter, setRoleFilter] = useState<'all' | UserRole>('all');
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'inactive'>('all');
@@ -425,40 +433,82 @@ export const TeamSection: React.FC = () => {
     }
   };
 
-  const handleRevokeInvite = async (invite: Invite) => {
-    if (!confirm(`Revogar o convite de ${invite.name}? O link deixará de funcionar.`)) return;
-    try {
-      await crmApi.revokeInvite(invite.id);
-      showNotification(`Convite de ${invite.name} revogado.`);
-      loadPendingInvites();
-    } catch (err: any) {
-      showNotification(err.message || 'Falha ao revogar convite', 'error');
-    }
+  const handleRevokeInvite = (invite: Invite) => {
+    requestConfirm({
+      title: 'Revogar convite',
+      description: `Revoga o convite de ${invite.name}. O link deixará de funcionar.`,
+      confirmLabel: 'Revogar',
+      tone: 'default',
+      onConfirm: async () => {
+        try {
+          await crmApi.revokeInvite(invite.id);
+          showNotification(`Convite de ${invite.name} revogado.`);
+          loadPendingInvites();
+        } catch (err: any) {
+          showNotification(err.message || 'Falha ao revogar convite', 'error');
+        }
+      }
+    });
   };
 
-  const handleResetPassword = async (userId: string, name: string) => {
-    const newPassword = window.prompt(`Nova senha para ${name} (mínimo 6 caracteres):`);
-    if (!newPassword) return;
-    if (newPassword.length < 6) {
-      showNotification('A senha precisa ter ao menos 6 caracteres.', 'warning');
+  const openResetPassword = (u: UserProfile) => {
+    setResetPasswordFor(u);
+    setResetPasswordValue('');
+    setResetPasswordConfirm('');
+    setResetPasswordError('');
+  };
+
+  const closeResetPassword = () => {
+    setResetPasswordFor(null);
+    setResetPasswordValue('');
+    setResetPasswordConfirm('');
+    setResetPasswordError('');
+  };
+
+  useEscapeToClose(closeResetPassword, !!resetPasswordFor);
+
+  const handleSubmitResetPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!resetPasswordFor) return;
+    if (resetPasswordValue.length < 6) {
+      setResetPasswordError('A senha precisa ter ao menos 6 caracteres.');
       return;
     }
+    if (resetPasswordValue !== resetPasswordConfirm) {
+      setResetPasswordError('As senhas não coincidem.');
+      return;
+    }
+    setIsResettingPassword(true);
     try {
-      if (authToken) await crmApi.setPassword(authToken, userId, newPassword);
-      showNotification(`Senha de ${name} redefinida com sucesso!`);
+      if (authToken) await crmApi.setPassword(authToken, resetPasswordFor.id, resetPasswordValue);
+      showNotification(`Senha de ${resetPasswordFor.name} redefinida com sucesso!`);
+      closeResetPassword();
     } catch (err: any) {
-      showNotification(err.message || 'Falha ao redefinir senha', 'error');
+      setResetPasswordError(err.message || 'Falha ao redefinir senha.');
+    } finally {
+      setIsResettingPassword(false);
     }
   };
 
-  const handleRevokeSessions = async (u: UserProfile) => {
-    if (!confirm(`Bloquear login de ${u.name} e forçar reautenticação? Sessões já abertas em outros dispositivos expiram em até 1 hora.`)) return;
-    try {
-      const result = await crmApi.revokeSessions(u.id);
-      showNotification(result.message);
-    } catch (err: any) {
-      showNotification(err.message || 'Falha ao encerrar sessões', 'error');
-    }
+  const handleRevokeSessions = (u: UserProfile) => {
+    // Critical tier (typed confirmation) — this is the admin "panic button"
+    // that force-logs-out a teammate everywhere; a stray click shouldn't
+    // trigger it the way a bare confirm() dialog easily could.
+    requestConfirm({
+      title: 'Bloquear login e forçar reautenticação',
+      description: `Bloqueia o login de ${u.name} e força reautenticação. Sessões já abertas em outros dispositivos expiram em até 1 hora.`,
+      confirmLabel: 'Bloquear e encerrar sessões',
+      tone: 'critical',
+      typedConfirmation: 'BLOQUEAR',
+      onConfirm: async () => {
+        try {
+          const result = await crmApi.revokeSessions(u.id);
+          showNotification(result.message);
+        } catch (err: any) {
+          showNotification(err.message || 'Falha ao encerrar sessões', 'error');
+        }
+      }
+    });
   };
 
   const assignedLeadsOf = (userId: string) => leads.filter(l => l.brokerId === userId);
@@ -960,7 +1010,7 @@ export const TeamSection: React.FC = () => {
 
                 {canManageTeam && (
                   <button
-                    onClick={() => handleResetPassword(u.id, u.name)}
+                    onClick={() => openResetPassword(u)}
                     className="px-3 py-1.5 rounded-xl text-xs font-semibold transition-colors bg-[#F1EFEC] hover:bg-[#EAE7E2] text-[#3A403A] border border-[#EAE7E2]"
                   >
                     Redefinir senha
@@ -979,7 +1029,11 @@ export const TeamSection: React.FC = () => {
 
                 {canManageTeam && users.length > 1 && !isCurrent && (
                   <button
-                    onClick={() =>
+                    onClick={() => {
+                      if (u.role === 'admin' && activeAdminCount <= 1) {
+                        showNotification('Não é possível remover o último administrador ativo — isso travaria o acesso administrativo do sistema.', 'warning');
+                        return;
+                      }
                       requestConfirm({
                         title: 'Excluir usuário permanentemente',
                         description: `Remove ${u.name} e não pode ser desfeito. Prefira "Desativar" para preservar o histórico de leads, contratos e comissões — a exclusão definitiva deve ser excepcional.${
@@ -994,8 +1048,8 @@ export const TeamSection: React.FC = () => {
                           deleteUser(u.id);
                           showNotification(`Usuário ${u.name} removido.`);
                         }
-                      })
-                    }
+                      });
+                    }}
                     title="Remover usuário permanentemente"
                     className="p-1.5 text-rose-600 hover:bg-rose-50 rounded-lg transition-colors border border-transparent hover:border-rose-200"
                   >
@@ -1030,6 +1084,80 @@ export const TeamSection: React.FC = () => {
           >
             <ChevronRight className="w-3.5 h-3.5" />
           </button>
+        </div>
+      )}
+
+      {resetPasswordFor && (
+        <div
+          className="fixed inset-0 z-100 bg-black/50 flex items-center justify-center p-4 animate-in fade-in duration-150"
+          onClick={closeResetPassword}
+        >
+          <div
+            className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6 space-y-4 animate-in zoom-in-95 duration-150"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-amber-50 flex items-center justify-center shrink-0">
+                  <Lock className="w-5 h-5 text-amber-600" />
+                </div>
+                <h3 className="font-serif-title text-base font-semibold text-[#344E41]">
+                  Redefinir senha de {resetPasswordFor.name}
+                </h3>
+              </div>
+              <button onClick={closeResetPassword} className="p-1 text-[#3A403A]/40 hover:text-[#3A403A] transition-colors" aria-label="Fechar">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSubmitResetPassword} className="space-y-3">
+              <div>
+                <label className="block text-[11px] font-bold uppercase tracking-widest text-[#3A403A]/70 mb-1">Nova senha</label>
+                <input
+                  type="password"
+                  required
+                  autoFocus
+                  minLength={6}
+                  value={resetPasswordValue}
+                  onChange={e => setResetPasswordValue(e.target.value)}
+                  placeholder="Mínimo 6 caracteres"
+                  className="w-full text-xs p-2.5 bg-[#FDFCFB] border border-[#EAE7E2] rounded-xl text-[#3A403A] focus:outline-hidden focus:border-[#A3B18A]"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-bold uppercase tracking-widest text-[#3A403A]/70 mb-1">Confirmar nova senha</label>
+                <input
+                  type="password"
+                  required
+                  minLength={6}
+                  value={resetPasswordConfirm}
+                  onChange={e => setResetPasswordConfirm(e.target.value)}
+                  placeholder="Repita a senha"
+                  className="w-full text-xs p-2.5 bg-[#FDFCFB] border border-[#EAE7E2] rounded-xl text-[#3A403A] focus:outline-hidden focus:border-[#A3B18A]"
+                />
+              </div>
+
+              {resetPasswordError && <p className="text-[11px] text-rose-600 font-medium">{resetPasswordError}</p>}
+
+              <div className="flex items-center justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={closeResetPassword}
+                  disabled={isResettingPassword}
+                  className="px-3.5 py-2 text-xs font-medium text-[#3A403A] border border-[#EAE7E2] rounded-xl hover:bg-[#F4F1EA] transition-colors disabled:opacity-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={isResettingPassword}
+                  className="px-4 py-2 text-xs font-semibold text-white bg-[#344E41] hover:bg-[#283d33] rounded-xl shadow-xs transition-colors disabled:opacity-50"
+                >
+                  {isResettingPassword ? 'Salvando...' : 'Redefinir senha'}
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
 

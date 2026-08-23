@@ -153,6 +153,12 @@ export const WhatsAppDirectModal: React.FC = () => {
   // On lead switch, pre-select the objective suggested by the Next Best
   // Action and the best matching template for it — the broker can still
   // change the objective/template manually afterwards.
+  //
+  // Depends on currentLead?.id rather than the currentLead object itself:
+  // updateLead() (called after a send when autoLogHistory is on) returns a
+  // new lead object for the *same* id, which would otherwise re-trigger this
+  // effect and silently overwrite whatever the broker had just sent/edited
+  // in messageText with a freshly generated canned message.
   useEffect(() => {
     if (!currentLead) return;
     const templates = settings.quickTemplates || [];
@@ -165,7 +171,8 @@ export const WhatsAppDirectModal: React.FC = () => {
       setSelectedTemplateId(template.id);
       setMessageText(formatTemplateMessage(template.message, currentLead));
     }
-  }, [currentLead]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentLead?.id]);
 
   const handleSelectLeadFromSearch = (lead: Lead) => {
     setSelectedLeadId(lead.id);
@@ -291,7 +298,11 @@ export const WhatsAppDirectModal: React.FC = () => {
   };
 
   const handleCopyMessage = () => {
-    navigator.clipboard.writeText(formatTemplateMessage(messageText, currentLead));
+    // messageText is already fully rendered (set by handleSelectTemplate /
+    // the lead-switch effect) — re-running it through formatTemplateMessage
+    // here would re-substitute any literal "{variavel}"-shaped text the
+    // broker typed or that happened to survive from a prior substitution.
+    navigator.clipboard.writeText(messageText);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -470,8 +481,8 @@ export const WhatsAppDirectModal: React.FC = () => {
                   onCopy={handleCopyMessage}
                   canSend={!!currentLead && !!currentLead.phone}
                   evolutionSending={evolutionSending}
-                  onSendWeb={() => handleSendWhatsAppWeb(currentLead, formatTemplateMessage(messageText, currentLead))}
-                  onSendEvolution={() => handleSendEvolutionDirect(currentLead, formatTemplateMessage(messageText, currentLead))}
+                  onSendWeb={() => handleSendWhatsAppWeb(currentLead, messageText)}
+                  onSendEvolution={() => handleSendEvolutionDirect(currentLead, messageText)}
                 />
               </div>
             </div>

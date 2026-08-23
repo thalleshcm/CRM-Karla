@@ -1,7 +1,7 @@
 import React from 'react';
-import { Save, RotateCcw, Loader2, CheckCircle2 } from 'lucide-react';
+import { Save, RotateCcw, Loader2, CheckCircle2, AlertTriangle } from 'lucide-react';
 
-export type SaveState = 'idle' | 'dirty' | 'saving' | 'saved';
+export type SaveState = 'idle' | 'dirty' | 'saving' | 'saved' | 'error';
 
 interface SaveBarProps {
   state: SaveState;
@@ -20,12 +20,19 @@ export const SaveBar: React.FC<SaveBarProps> = ({ state, onSave, onDiscard, save
 
   return (
     <div className="flex items-center gap-3 flex-wrap">
-      {state === 'dirty' && (
+      {(state === 'dirty' || state === 'error') && (
         <>
-          <span className="flex items-center gap-1.5 text-[11px] font-semibold text-amber-700">
-            <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
-            Alterações não salvas
-          </span>
+          {state === 'error' ? (
+            <span className="flex items-center gap-1.5 text-[11px] font-semibold text-rose-700">
+              <AlertTriangle className="w-3 h-3" />
+              Falha ao salvar — tente novamente
+            </span>
+          ) : (
+            <span className="flex items-center gap-1.5 text-[11px] font-semibold text-amber-700">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+              Alterações não salvas
+            </span>
+          )}
           {onDiscard && (
             <button
               type="button"

@@ -50,7 +50,12 @@ export function computeLeadHealthScore(lead: Lead): LeadHealthResult {
     Number.isNaN(lastContactMs) ? 0 : lastContactMs,
     ...(lead.history || []).map(h => parseFlexibleDate(h.date) || 0)
   );
-  const staleForDays = mostRecentEventMs > 0 ? (Date.now() - mostRecentEventMs) / DAY_MS : Infinity;
+  // Falls back to the lead's creation date (never Infinity) when there's no
+  // lastContactDate and no history — a lead always has a createdAt, so this
+  // still yields a real day count instead of leaking "Infinity" into the
+  // breakdown label shown to the broker.
+  const fallbackEventMs = mostRecentEventMs > 0 ? mostRecentEventMs : Date.parse(lead.createdAt) || Date.now();
+  const staleForDays = (Date.now() - fallbackEventMs) / DAY_MS;
   if (staleForDays >= 5) breakdown.push({ label: `Sem interação há ${Math.floor(staleForDays)} dias`, points: -8 });
 
   const rawScore = breakdown.reduce((sum, b) => sum + b.points, 0);

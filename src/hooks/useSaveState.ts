@@ -14,9 +14,16 @@ export function useSaveState() {
   const save = async (fn: () => void | Promise<void>) => {
     if (state === 'saving') return; // guards against double-click firing the save twice
     setState('saving');
-    await fn();
-    setState('saved');
-    setTimeout(() => setState(prev => (prev === 'saved' ? 'idle' : prev)), 2000);
+    try {
+      await fn();
+      setState('saved');
+      setTimeout(() => setState(prev => (prev === 'saved' ? 'idle' : prev)), 2000);
+    } catch (err) {
+      // Land back on 'error' (not stuck on 'saving') so the Save button
+      // reappears and the user can retry, instead of a dead spinner forever.
+      console.error('Falha ao salvar:', err);
+      setState('error');
+    }
   };
 
   const reset = () => setState('idle');

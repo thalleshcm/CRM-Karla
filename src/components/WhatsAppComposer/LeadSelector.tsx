@@ -83,7 +83,11 @@ export const LeadSelector: React.FC<LeadSelectorProps> = ({
         {isDropdownOpen && (
           <div className="absolute top-full left-0 right-0 mt-1.5 bg-white border border-[#EAE7E2] rounded-2xl shadow-xl z-30 max-h-60 overflow-y-auto divide-y divide-[#F4F1EA] animate-in fade-in zoom-in-95 duration-100">
             <div className="p-2 bg-[#F4F1EA]/60 text-[10px] font-semibold text-[#3A403A]/70 flex items-center justify-between sticky top-0 backdrop-blur-xs z-10">
-              <span>{filteredLeads.length} leads encontrados</span>
+              <span>
+                {filteredLeads.length > 50
+                  ? `Mostrando 50 de ${filteredLeads.length} leads — refine a busca para ver os demais`
+                  : `${filteredLeads.length} leads encontrados`}
+              </span>
               {leadSearchQuery && (
                 <span className="text-emerald-800 font-bold">Filtro: "{leadSearchQuery}"</span>
               )}

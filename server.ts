@@ -123,7 +123,9 @@ function formatBrazilPhone(rawPhone: string): string {
   if (phone.length === 10) {
     const ddd = phone.substring(0, 2);
     const firstDigit = phone.substring(2, 3);
-    if (firstDigit === '8') phone = `${ddd}9${phone.substring(2)}`;
+    // Old 8-digit mobile numbers (pre-2012, no leading 9) started with
+    // 6/7/8/9 depending on the carrier — not just 8.
+    if (['6', '7', '8', '9'].includes(firstDigit)) phone = `${ddd}9${phone.substring(2)}`;
     return `55${phone}`;
   }
 
@@ -758,33 +760,71 @@ app.post('/api/state/sync', requireAuth, (req, res) => {
 
   // User management (activate/deactivate, delete, manager reassignment,
   // adding a user directly) all flow through this generic sync too — there's
-  // no dedicated REST call from the SPA for any of it — so audit entries for
-  // those actions are synthesized here the same way webhook events are
-  // synthesized for leads/contracts above.
+  // no dedicated REST call from the SPA for any of it. That means this route
+  // has to re-implement the same authorization the dedicated PUT/DELETE
+  // /api/users/:id routes enforce (self-escalation guard, canManageTeam gate,
+  // last-active-admin protection) instead of trusting the array wholesale —
+  // otherwise any authenticated user could grant themselves admin or edit/
+  // delete teammates by posting a crafted body straight to this endpoint.
   const requester = (req as any).user as UserProfile;
+  const requesterCanManageTeam = requester.role === 'admin' || userHasPermission(requester, 'canManageTeam');
+
   if (Array.isArray(incoming.users)) {
     const prevUsersById = new Map(dbState.users.map(u => [u.id, u]));
-    const nextIds = new Set(incoming.users.map((u: UserProfile) => u.id));
+    const nextUsersById = new Map((incoming.users as UserProfile[]).map(u => [u.id, u]));
+    const resolvedUsers: UserProfile[] = [];
+
+    // Deletions: keep any user the requester wasn't allowed to remove.
     for (const prevUser of dbState.users) {
-      if (!nextIds.has(prevUser.id)) {
-        logAudit(requester, 'user_deleted', prevUser.name);
-      }
-    }
-    for (const nextUser of incoming.users as UserProfile[]) {
-      const prev = prevUsersById.get(nextUser.id);
-      if (!prev) {
-        logAudit(requester, 'user_created', nextUser.name, nextUser.roleLabel);
+      if (nextUsersById.has(prevUser.id)) continue;
+      const isLastActiveAdmin = prevUser.role === 'admin' && dbState.users.filter(u => u.role === 'admin' && u.active).length <= 1;
+      if (!requesterCanManageTeam || isLastActiveAdmin) {
+        resolvedUsers.push(prevUser);
         continue;
       }
-      if (prev.active !== nextUser.active) {
-        logAudit(requester, nextUser.active ? 'user_activated' : 'user_deactivated', nextUser.name);
-      }
-      if (prev.managerId !== nextUser.managerId) {
-        const managerName = nextUser.managerId ? prevUsersById.get(nextUser.managerId)?.name || nextUser.managerId : 'nenhum';
-        logAudit(requester, 'manager_changed', nextUser.name, `Gestor: ${managerName}`);
-      }
+      logAudit(requester, 'user_deleted', prevUser.name);
     }
-    dbState.users = incoming.users;
+
+    for (const nextUser of incoming.users as UserProfile[]) {
+      const prev = prevUsersById.get(nextUser.id);
+
+      if (!prev) {
+        // Creation requires canManageTeam; a non-admin creator can't hand out admin.
+        if (!requesterCanManageTeam) continue;
+        const safeNewUser = { ...nextUser };
+        if (requester.role !== 'admin') {
+          safeNewUser.role = 'broker';
+          safeNewUser.roleLabel = safeNewUser.roleLabel || 'Corretor';
+        }
+        resolvedUsers.push(safeNewUser);
+        logAudit(requester, 'user_created', safeNewUser.name, safeNewUser.roleLabel);
+        continue;
+      }
+
+      const isOwnRow = nextUser.id === requester.id;
+      if (!isOwnRow && !requesterCanManageTeam) {
+        resolvedUsers.push(prev); // no permission to touch someone else's row — keep as-is
+        continue;
+      }
+
+      const merged = { ...nextUser };
+      if ((merged.role !== prev.role || merged.roleLabel !== prev.roleLabel) && requester.role !== 'admin') {
+        merged.role = prev.role;
+        merged.roleLabel = prev.roleLabel;
+      }
+
+      if (prev.active !== merged.active) {
+        logAudit(requester, merged.active ? 'user_activated' : 'user_deactivated', merged.name);
+      }
+      if (prev.managerId !== merged.managerId) {
+        const managerName = merged.managerId ? prevUsersById.get(merged.managerId)?.name || merged.managerId : 'nenhum';
+        logAudit(requester, 'manager_changed', merged.name, `Gestor: ${managerName}`);
+      }
+
+      resolvedUsers.push(merged);
+    }
+
+    dbState.users = resolvedUsers;
   }
 
   if (incoming.settings) {
@@ -794,7 +834,11 @@ app.post('/api/state/sync', requireAuth, (req, res) => {
     dbState.settings = { ...dbState.settings, ...incoming.settings };
   }
 
-  if (incoming.rolePermissions) {
+  // The permissions matrix is admin-only everywhere else (PUT
+  // /api/settings/permissions requires requireAdmin) — silently drop the
+  // change here too instead of applying it, otherwise this generic sync
+  // route would be a wide-open bypass of that restriction.
+  if (incoming.rolePermissions && requester.role === 'admin') {
     const prevPerms = dbState.rolePermissions;
     const nextPerms = incoming.rolePermissions as Record<UserRole, RolePermissionConfig>;
     for (const role of Object.keys(nextPerms) as UserRole[]) {
@@ -899,7 +943,7 @@ app.get('/api/leads/:id', requireAuth, (req, res) => {
   res.json(lead);
 });
 
-app.post('/api/leads', requireAuth, (req, res) => {
+app.post('/api/leads', requireAuth, requirePermission('canCreateLeads'), (req, res) => {
   const body = req.body;
   if (!body.name || !body.phone) {
     return res.status(400).json({ error: 'Nome e telefone são obrigatórios' });
@@ -950,7 +994,7 @@ app.post('/api/leads/import', requireAuth, requirePermission('canCreateLeads'), 
   res.json({ success: true, created, linkedToExistingClient, errors });
 });
 
-app.put('/api/leads/:id', requireAuth, (req, res) => {
+app.put('/api/leads/:id', requireAuth, requirePermission('canEditLeads'), (req, res) => {
   const idx = dbState.leads.findIndex(l => l.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Lead não encontrado' });
 
@@ -1228,7 +1272,7 @@ app.get('/api/contracts', requireAuth, (req, res) => {
 app.post('/api/contracts', requireAuth, (req, res) => {
   const body = req.body;
   const contractId = `cont-${Date.now()}`;
-  const totalCommValue = (body.value * (body.commissionPercent || 5)) / 100;
+  const totalCommValue = (body.value * (body.commissionPercent !== undefined ? body.commissionPercent : 5)) / 100;
   const brokerPerc = body.brokerCommissionPercent !== undefined ? body.brokerCommissionPercent : (body.splitPercents?.broker || 50);
   const brokerCommVal = (totalCommValue * brokerPerc) / 100;
 
@@ -1334,8 +1378,17 @@ app.get('/api/users', requireAuth, (req, res) => {
 });
 
 app.post('/api/users', requireAuth, requirePermission('canManageTeam'), (req, res) => {
+  const requester = (req as any).user as UserProfile;
+  const body = { ...req.body };
+  // Same self-escalation guard as PUT /api/users/:id — canManageTeam alone
+  // doesn't mean "may create admins," only an actual admin does.
+  if (requester.role !== 'admin') {
+    body.role = 'broker';
+    body.roleLabel = body.roleLabel || 'Corretor';
+  }
+
   const newUser = {
-    ...req.body,
+    ...body,
     id: `user-${Date.now()}`,
     active: true,
     assignedLeadCount: 0
@@ -1604,14 +1657,17 @@ function requireAdmin(req: express.Request, res: express.Response, next: express
   next();
 }
 
+function userHasPermission(user: UserProfile, key: keyof RolePermissions): boolean {
+  return !!dbState.rolePermissions[user.role]?.permissions[key];
+}
+
 // Generic permission gate, for actions that should follow the granular
 // RolePermissions matrix (settable per-role in Perfis & Permissões) instead
 // of the hardcoded admin-only check above.
 function requirePermission(key: keyof RolePermissions) {
   return (req: express.Request, res: express.Response, next: express.NextFunction) => {
     const requester = (req as any).user as UserProfile;
-    const roleConfig = dbState.rolePermissions[requester.role];
-    if (!roleConfig?.permissions[key]) {
+    if (!userHasPermission(requester, key)) {
       return res.status(403).json({ error: 'Sem permissão para esta ação' });
     }
     next();

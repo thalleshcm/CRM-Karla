@@ -418,9 +418,9 @@ export const crmApi = {
     return res.json();
   },
 
-  async deleteWebhook(id: string): Promise<boolean> {
+  async deleteWebhook(id: string): Promise<void> {
     const res = await apiFetch(`/webhooks/${encodeURIComponent(id)}`, { method: 'DELETE' });
-    return res.ok;
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Falha ao remover webhook');
   },
 
   async testWebhook(id: string): Promise<{ success: boolean; status?: number; error?: string }> {
@@ -445,9 +445,9 @@ export const crmApi = {
     return res.json();
   },
 
-  async revokeMcpToken(id: string): Promise<boolean> {
+  async revokeMcpToken(id: string): Promise<void> {
     const res = await apiFetch(`/mcp/tokens/${encodeURIComponent(id)}`, { method: 'DELETE' });
-    return res.ok;
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Falha ao revogar token');
   },
 
   // Invites (team invite links — USUARIOS_MELHORIAS.md Fase 1)
