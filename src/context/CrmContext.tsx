@@ -21,7 +21,8 @@ import {
   OutgoingWebhook,
   WebhookEvent,
   McpToken,
-  Client
+  Client,
+  FIXED_COMPANY_NAME
 } from '../types';
 import { normalizePhoneKey } from '../utils/formatters';
 import {
@@ -52,11 +53,13 @@ export interface ImportLeadRow {
   estimatedValue?: number;
   funnelId?: string;
   origin?: string;
+  tags?: string[];
 }
 
 export interface ImportResult {
   created: number;
   linkedToExistingClient: number;
+  duplicatesSkipped: number;
   errors: { row: number; error: string }[];
 }
 
@@ -194,6 +197,10 @@ interface CrmContextType {
   deleteContract: (id: string) => void;
   markCommissionPaid: (id: string) => void;
   updateSettings: (newSettings: Partial<CrmSettings>) => void;
+  createLeadTag: (tag: string) => void;
+  deleteLeadTag: (tag: string) => void;
+  addTagToLead: (leadId: string, tag: string) => void;
+  removeTagFromLead: (leadId: string, tag: string) => void;
   resetToDemoData: () => void;
   clearAllData: () => void;
   markNotificationRead: (id: string) => void;
@@ -431,7 +438,11 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const [settings, setSettings] = useState<CrmSettings>(() => {
     const saved = localStorage.getItem('aurum_settings');
-    return saved ? JSON.parse(saved) : DEFAULT_SETTINGS;
+    // Merged onto DEFAULT_SETTINGS (rather than trusting the stored object
+    // as-is) so a field added after this cache was last written — like
+    // leadTags — doesn't come back undefined, and companyName is forced to
+    // the fixed constant even for a cache saved before that lock existed.
+    return saved ? { ...DEFAULT_SETTINGS, ...JSON.parse(saved), companyName: FIXED_COMPANY_NAME } : DEFAULT_SETTINGS;
   });
 
   const [notifications, setNotifications] = useState<CrmNotification[]>([]);
@@ -664,9 +675,19 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return roleConfig.allowedModules.includes(moduleId);
   };
 
+  // Visibility scope keys (canViewAllLeads/canViewAllCommissions) always
+  // resolve to true for the admin role, regardless of what the stored
+  // role-permission matrix says — Settings only ever exposes that matrix for
+  // the broker role (see SettingsUsersAccess.tsx), so admin's own visibility
+  // must never depend on a toggle that could be misconfigured or left stale.
+  // This is enforced once here so every caller (badges, filters, dropdowns
+  // across the app, not just the visible* memos below) gets it automatically.
+  const ADMIN_ALWAYS_TRUE_PERMISSIONS: (keyof RolePermissions)[] = ['canViewAllLeads', 'canViewAllCommissions'];
+
   const hasPermission = (permissionKey: keyof RolePermissions, user?: UserProfile): boolean => {
     const activeUser = user || currentUser;
     if (!activeUser) return true;
+    if (activeUser.role === 'admin' && ADMIN_ALWAYS_TRUE_PERMISSIONS.includes(permissionKey)) return true;
     const roleConfig = rolePermissions[activeUser.role];
     if (!roleConfig) return true;
     return !!roleConfig.permissions[permissionKey];
@@ -833,14 +854,19 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const importLeadsBulk = async (rows: ImportLeadRow[]): Promise<ImportResult> => {
-    const result = await crmApi.importLeads(rows);
+    const result: any = await crmApi.importLeads(rows);
     // The server created the leads/clients directly in its own dbState —
     // pull the fresh full state back down rather than trying to reconstruct
     // 1..2000 rows' worth of ids/history locally.
     const backendState = await crmApi.fetchFullState();
     if (Array.isArray(backendState.leads)) setLeads(backendState.leads);
     if (Array.isArray(backendState.clients)) setClients(backendState.clients);
-    return { created: result.created, linkedToExistingClient: result.linkedToExistingClient, errors: result.errors };
+    return {
+      created: result.created,
+      linkedToExistingClient: result.linkedToExistingClient,
+      duplicatesSkipped: result.duplicatesSkipped || 0,
+      errors: result.errors
+    };
   };
 
   const updateLead = (id: string, updates: Partial<Lead>) => {
@@ -1246,7 +1272,49 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateSettings = (newSettings: Partial<CrmSettings>) => {
-    setSettings(prev => ({ ...prev, ...newSettings }));
+    // companyName is fixed system-wide (single agency) — never accept an
+    // override here, no matter which UI path the update came from.
+    setSettings(prev => ({ ...prev, ...newSettings, companyName: FIXED_COMPANY_NAME }));
+  };
+
+  const createLeadTag = (tag: string) => {
+    const clean = tag.trim();
+    if (!clean) return;
+    setSettings(prev => {
+      const existing = prev.leadTags || [];
+      return existing.includes(clean) ? prev : { ...prev, leadTags: [...existing, clean] };
+    });
+  };
+
+  const deleteLeadTag = (tag: string) => {
+    setSettings(prev => ({ ...prev, leadTags: (prev.leadTags || []).filter(t => t !== tag) }));
+    setLeads(prev => prev.map(l => (l.tags?.includes(tag) ? { ...l, tags: l.tags.filter(t => t !== tag) } : l)));
+  };
+
+  const addTagToLead = (leadId: string, tag: string) => {
+    const clean = tag.trim();
+    if (!clean) return;
+    createLeadTag(clean);
+    setLeads(prev =>
+      prev.map(lead => {
+        if (lead.id !== leadId) return lead;
+        if (lead.tags?.includes(clean)) return lead;
+        const updated = { ...lead, tags: [...(lead.tags || []), clean] };
+        if (selectedLead?.id === leadId) setSelectedLead(updated);
+        return updated;
+      })
+    );
+  };
+
+  const removeTagFromLead = (leadId: string, tag: string) => {
+    setLeads(prev =>
+      prev.map(lead => {
+        if (lead.id !== leadId) return lead;
+        const updated = { ...lead, tags: (lead.tags || []).filter(t => t !== tag) };
+        if (selectedLead?.id === leadId) setSelectedLead(updated);
+        return updated;
+      })
+    );
   };
 
   const resetToDemoData = () => {
@@ -1386,6 +1454,10 @@ export const CrmProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         deleteContract,
         markCommissionPaid,
         updateSettings,
+        createLeadTag,
+        deleteLeadTag,
+        addTagToLead,
+        removeTagFromLead,
         resetToDemoData,
         clearAllData,
         markNotificationRead,

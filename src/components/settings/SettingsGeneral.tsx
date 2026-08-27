@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { RotateCcw, Trash2, MessageSquare, BellRing, BellOff } from 'lucide-react';
+import { RotateCcw, Trash2, MessageSquare, BellRing, BellOff, Lock } from 'lucide-react';
 import { useCrm } from '../../context/CrmContext';
 import { DEFAULT_SETTINGS } from '../../data/initialData';
+import { FIXED_COMPANY_NAME } from '../../types';
 import { useSettingsNotification } from './SettingsNotification';
 import { SaveBar } from './SaveBar';
 import { useSaveState } from '../../hooks/useSaveState';
@@ -18,7 +19,6 @@ export const ProfileSection: React.FC = () => {
   const showNotification = useSettingsNotification();
   const { state, markDirty, save, reset } = useSaveState();
 
-  const [companyName, setCompanyName] = useState(settings.companyName);
   const [slogan, setSlogan] = useState(settings.slogan);
   const [brokerName, setBrokerName] = useState(settings.brokerName);
   const [brokerRole, setBrokerRole] = useState(settings.brokerRole);
@@ -33,7 +33,6 @@ export const ProfileSection: React.FC = () => {
   };
 
   const handleDiscard = () => {
-    setCompanyName(settings.companyName);
     setSlogan(settings.slogan);
     setBrokerName(settings.brokerName);
     setBrokerRole(settings.brokerRole);
@@ -47,7 +46,7 @@ export const ProfileSection: React.FC = () => {
   const handleSaveProfile = (e?: React.FormEvent) => {
     e?.preventDefault();
     save(() => {
-      updateSettings({ companyName, slogan, brokerName, brokerRole, brokerInitials, creci, brokerPhone, brokerEmail });
+      updateSettings({ slogan, brokerName, brokerRole, brokerInitials, creci, brokerPhone, brokerEmail });
       showNotification('Dados da imobiliária salvos com sucesso!');
     });
   };
@@ -64,14 +63,13 @@ export const ProfileSection: React.FC = () => {
             <label className="block text-xs font-bold uppercase tracking-widest text-[#3A403A]/70 mb-1">
               Nome da Empresa / Marca
             </label>
-            <input
-              type="text"
-              maxLength={60}
-              value={companyName}
-              onChange={e => field(setCompanyName)(e.target.value)}
-              className="w-full text-xs p-2.5 bg-[#FDFCFB] border border-[#EAE7E2] rounded-xl text-[#3A403A] focus:outline-hidden focus:border-[#A3B18A]"
-            />
-            <p className="text-[10px] text-[#3A403A]/40 mt-1 text-right">{companyName.length}/60</p>
+            <div className="w-full text-xs p-2.5 bg-[#F1EFEC] border border-[#EAE7E2] rounded-xl text-[#3A403A]/70 flex items-center justify-between gap-2">
+              <span className="font-semibold text-[#3A403A]">{FIXED_COMPANY_NAME}</span>
+              <Lock className="w-3.5 h-3.5 text-[#3A403A]/40 shrink-0" />
+            </div>
+            <p className="text-[10px] text-[#3A403A]/40 mt-1">
+              Nome fixo da plataforma — não pode ser alterado para o de outra imobiliária.
+            </p>
           </div>
 
           <div>

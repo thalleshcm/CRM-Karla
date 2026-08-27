@@ -1,3 +1,8 @@
+// The CRM serves a single agency — every place that shows/persists a company
+// name must use this constant instead of a free-text field, so no user can
+// register or display a different imobiliária's name anywhere in the app.
+export const FIXED_COMPANY_NAME = 'Karla Imobiliária';
+
 export type LeadTemperature = 'quente' | 'morno' | 'frio';
 
 export type LeadOrigin = 
@@ -259,6 +264,7 @@ export interface Lead {
   additionalBuyers?: AdditionalBuyer[];
   documentsList?: LeadAttachedDocument[];
   contractDetails?: LeadContractDetails;
+  tags?: string[];
 }
 
 export type LeadStatusFilter = 'ativos' | 'ganhos' | 'perdidos' | 'todos';
@@ -508,7 +514,11 @@ export interface CrmSettings {
   quickTemplates: WhatsAppTemplate[];
   monthlySalesGoalCount: number;
   monthlySalesGoalVgv: number;
-  
+
+  // Global catalog of lead tags (e.g. "Quente", "Investidor") — leads
+  // reference these by name in Lead.tags. Managed from the lead detail modal.
+  leadTags: string[];
+
   // Evolution API Integration
   evolutionApiUrl: string;
   evolutionApiKey: string; // Global API Key

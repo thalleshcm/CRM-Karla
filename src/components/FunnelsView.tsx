@@ -19,7 +19,10 @@ import {
   CheckCircle2,
   X,
   AlertCircle,
-  UserPlus
+  UserPlus,
+  Tag,
+  ChevronDown,
+  FileSpreadsheet
 } from 'lucide-react';
 import { useCrm } from '../context/CrmContext';
 import { Header } from './Header';
@@ -46,12 +49,16 @@ export const FunnelsView: React.FC = () => {
     markLeadWon,
     markLeadLost,
     reactivateLead,
-    setIsNewLeadModalOpen
+    setIsNewLeadModalOpen,
+    setIsImportModalOpen,
+    setImportType
   } = useCrm();
 
   const [dragOverStageId, setDragOverStageId] = useState<StageId | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [prioritizeByRisk, setPrioritizeByRisk] = useState(false);
+  const [selectedTagFilters, setSelectedTagFilters] = useState<string[]>([]);
+  const [showTagFilterMenu, setShowTagFilterMenu] = useState(false);
   const [lostModalLeadId, setLostModalLeadId] = useState<string | null>(null);
   const [lostReasonSelected, setLostReasonSelected] = useState<string>(LOST_REASON_OPTIONS[0]);
   const [lostNotesInput, setLostNotesInput] = useState('');
@@ -96,6 +103,12 @@ export const FunnelsView: React.FC = () => {
       const matchProperty = (lead.propertyInterest || '').toLowerCase().includes(q);
       const matchBroker = (lead.brokerName || '').toLowerCase().includes(q);
       if (!matchName && !matchPhone && !matchProperty && !matchBroker) return false;
+    }
+
+    // Tag filter — combines with every filter above (funnel/status/search).
+    // A lead matches if it carries at least one of the selected tags.
+    if (selectedTagFilters.length > 0) {
+      if (!lead.tags || !lead.tags.some(t => selectedTagFilters.includes(t))) return false;
     }
 
     return true;
@@ -170,13 +183,25 @@ export const FunnelsView: React.FC = () => {
         subtitle="Arraste os cards para avançar os estágios da negociação imobiliária."
         actionButton={
           hasPermission('canCreateLeads') ? (
-            <button
-              onClick={() => setIsNewLeadModalOpen(true)}
-              className="flex items-center gap-2 px-4 py-2 bg-[#344E41] hover:bg-[#283d33] text-white rounded-xl text-xs font-semibold shadow-xs transition-colors"
-            >
-              <UserPlus className="w-3.5 h-3.5 text-[#A3B18A]" />
-              <span>Novo Lead</span>
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => {
+                  setImportType('csv');
+                  setIsImportModalOpen(true);
+                }}
+                className="flex items-center gap-2 px-4 py-2 bg-white hover:bg-[#F4F1EA] text-[#344E41] border border-[#EAE7E2] rounded-xl text-xs font-semibold shadow-2xs transition-colors"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5 text-[#588157]" />
+                <span>Importar planilha</span>
+              </button>
+              <button
+                onClick={() => setIsNewLeadModalOpen(true)}
+                className="flex items-center gap-2 px-4 py-2 bg-[#344E41] hover:bg-[#283d33] text-white rounded-xl text-xs font-semibold shadow-xs transition-colors"
+              >
+                <UserPlus className="w-3.5 h-3.5 text-[#A3B18A]" />
+                <span>Novo Lead</span>
+              </button>
+            </div>
           ) : undefined
         }
       />
@@ -291,6 +316,63 @@ export const FunnelsView: React.FC = () => {
 
         {/* Right Side: Quick Search & Total Summary */}
         <div className="flex items-center gap-3">
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setShowTagFilterMenu(v => !v)}
+              className={`px-2.5 py-1.5 text-xs rounded-xl font-semibold border transition-all flex items-center gap-1.5 cursor-pointer shadow-2xs ${
+                selectedTagFilters.length > 0
+                  ? 'bg-[#344E41] text-white border-[#344E41]'
+                  : 'bg-white text-[#3A403A] border-[#EAE7E2] hover:bg-[#FDFCFB]'
+              }`}
+            >
+              <Tag className="w-3.5 h-3.5" />
+              <span>Tags{selectedTagFilters.length > 0 ? ` (${selectedTagFilters.length})` : ''}</span>
+              <ChevronDown className="w-3 h-3" />
+            </button>
+
+            {showTagFilterMenu && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setShowTagFilterMenu(false)} />
+                <div className="absolute right-0 top-full mt-1.5 z-50 w-60 bg-white border border-slate-200 rounded-xl shadow-lg p-2.5 space-y-1.5 max-h-80 overflow-y-auto">
+                  {(settings.leadTags || []).length === 0 && (
+                    <p className="text-[11px] text-[#3A403A]/50 italic px-1 py-1">Nenhuma tag cadastrada ainda.</p>
+                  )}
+                  {(settings.leadTags || []).map(tag => {
+                    const isSelected = selectedTagFilters.includes(tag);
+                    return (
+                      <label
+                        key={tag}
+                        className="flex items-center gap-2 px-1.5 py-1 rounded-lg hover:bg-[#F4F1EA] cursor-pointer text-xs text-[#3A403A]"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() =>
+                            setSelectedTagFilters(prev =>
+                              isSelected ? prev.filter(t => t !== tag) : [...prev, tag]
+                            )
+                          }
+                          className="accent-[#588157]"
+                        />
+                        <span>{tag}</span>
+                      </label>
+                    );
+                  })}
+                  {selectedTagFilters.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setSelectedTagFilters([])}
+                      className="w-full text-left text-[11px] font-semibold text-[#588157] hover:text-[#344E41] pt-1.5 mt-1 border-t border-slate-100"
+                    >
+                      Limpar filtro de tags
+                    </button>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+
           <button
             onClick={() => setPrioritizeByRisk(v => !v)}
             title="Ordena cada coluna colocando os leads com Lead Health mais baixo (maior risco) primeiro"
@@ -521,6 +603,23 @@ export const FunnelsView: React.FC = () => {
                         <DollarSign className="w-3.5 h-3.5 text-[#588157] shrink-0" />
                         <span>{formatCurrency(lead.estimatedValue)}</span>
                       </div>
+
+                      {/* Tags */}
+                      {lead.tags && lead.tags.length > 0 && (
+                        <div className="flex items-center gap-1 flex-wrap mt-1.5">
+                          {lead.tags.slice(0, 3).map(tag => (
+                            <span
+                              key={tag}
+                              className="text-[9px] font-bold text-[#344E41] bg-[#A3B18A]/20 border border-[#A3B18A]/30 px-1.5 py-0.5 rounded-full"
+                            >
+                              {tag}
+                            </span>
+                          ))}
+                          {lead.tags.length > 3 && (
+                            <span className="text-[9px] font-semibold text-[#3A403A]/50">+{lead.tags.length - 3}</span>
+                          )}
+                        </div>
+                      )}
 
                       {/* Follow-up reminder if any */}
                       {lead.nextFollowUpDate && (

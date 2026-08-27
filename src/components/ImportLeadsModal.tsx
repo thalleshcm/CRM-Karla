@@ -1,11 +1,12 @@
 import React, { useMemo, useState } from 'react';
-import { X, Upload, MessageSquare, FileSpreadsheet, Check, AlertCircle, ArrowLeft, FileUp } from 'lucide-react';
+import { X, Upload, MessageSquare, FileSpreadsheet, Check, AlertCircle, ArrowLeft, FileUp, Trash2, ShieldAlert } from 'lucide-react';
 import { useCrm } from '../context/CrmContext';
 import { useEscapeToClose } from '../hooks/useEscapeToClose';
 import { ImportLeadRow, ImportResult } from '../context/CrmContext';
+import { normalizePhoneKey } from '../utils/formatters';
 
-type CsvStep = 'upload' | 'map' | 'result';
-type FieldKey = 'name' | 'phone' | 'email' | 'propertyInterest' | 'estimatedValue' | 'origin';
+type CsvStep = 'upload' | 'map' | 'review' | 'result';
+type FieldKey = 'name' | 'phone' | 'email' | 'propertyInterest' | 'estimatedValue' | 'origin' | 'tags';
 
 const FIELD_LABELS: Record<FieldKey, string> = {
   name: 'Nome *',
@@ -13,7 +14,8 @@ const FIELD_LABELS: Record<FieldKey, string> = {
   email: 'E-mail',
   propertyInterest: 'Imóvel de interesse',
   estimatedValue: 'Valor estimado',
-  origin: 'Origem'
+  origin: 'Origem',
+  tags: 'Tags'
 };
 
 const FIELD_KEYWORDS: Record<FieldKey, string[]> = {
@@ -22,8 +24,24 @@ const FIELD_KEYWORDS: Record<FieldKey, string[]> = {
   email: ['email', 'e-mail'],
   propertyInterest: ['imovel', 'empreendimento', 'interesse', 'property', 'unidade'],
   estimatedValue: ['valor', 'value', 'preco', 'price', 'vgv'],
-  origin: ['origem', 'source', 'canal']
+  origin: ['origem', 'source', 'canal'],
+  tags: ['tag', 'tags', 'etiqueta']
 };
+
+// A single reviewable row in the pre-import validation table — editable so
+// the user can fix a missing/bad name or phone before confirming, instead of
+// having to re-upload the whole file for one typo.
+interface ReviewRow {
+  key: string;
+  name: string;
+  phone: string;
+  email: string;
+  propertyInterest: string;
+  estimatedValue: string;
+  origin: string;
+  tagsText: string;
+  excluded: boolean;
+}
 
 const normalizeText = (s: string): string =>
   String(s || '')
@@ -68,13 +86,15 @@ export const ImportLeadsModal: React.FC = () => {
     email: null,
     propertyInterest: null,
     estimatedValue: null,
-    origin: null
+    origin: null,
+    tags: null
   });
   const [targetFunnelId, setTargetFunnelId] = useState(activeFunnelId || 'investidores');
   const [parseError, setParseError] = useState('');
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [reviewRows, setReviewRows] = useState<ReviewRow[]>([]);
 
   useEscapeToClose(() => setIsImportModalOpen(false), isImportModalOpen);
 
@@ -83,9 +103,10 @@ export const ImportLeadsModal: React.FC = () => {
     setFileName('');
     setRawRows([]);
     setHasHeaderRow(true);
-    setColMap({ name: null, phone: null, email: null, propertyInterest: null, estimatedValue: null, origin: null });
+    setColMap({ name: null, phone: null, email: null, propertyInterest: null, estimatedValue: null, origin: null, tags: null });
     setParseError('');
     setImportResult(null);
+    setReviewRows([]);
   };
 
   const handleClose = () => {
@@ -94,8 +115,6 @@ export const ImportLeadsModal: React.FC = () => {
     setImportedCount(null);
     resetCsvWizard();
   };
-
-  if (!isImportModalOpen) return null;
 
   const finalizeParsedRows = (rows: any[][]) => {
     const cleaned = rows
@@ -140,25 +159,80 @@ export const ImportLeadsModal: React.FC = () => {
   const previewRows = dataRows.slice(0, 5);
   const canProceedToImport = colMap.name !== null && colMap.phone !== null;
 
-  const buildImportRows = (): ImportLeadRow[] => {
-    return dataRows
-      .map(r => ({
+  // Moves from column-mapping into the editable review/validation step —
+  // every row (not just a preview) becomes an editable draft so the user can
+  // fix a missing/malformed Nome or Telefone right here instead of having to
+  // patch the source file and re-upload.
+  const handleProceedToReview = () => {
+    const rows: ReviewRow[] = dataRows
+      .filter(r => r.some(cell => cell.trim() !== ''))
+      .map((r, i) => ({
+        key: `row-${i}`,
         name: colMap.name !== null ? (r[colMap.name] || '').trim() : '',
         phone: colMap.phone !== null ? (r[colMap.phone] || '').trim() : '',
-        email: colMap.email !== null ? (r[colMap.email] || '').trim() || undefined : undefined,
-        propertyInterest: colMap.propertyInterest !== null ? (r[colMap.propertyInterest] || '').trim() || undefined : undefined,
-        estimatedValue: colMap.estimatedValue !== null ? parseLocaleNumber(r[colMap.estimatedValue]) : undefined,
-        origin: colMap.origin !== null ? (r[colMap.origin] || '').trim() || undefined : undefined,
-        funnelId: targetFunnelId
-      }))
-      .filter(row => row.name || row.phone);
+        email: colMap.email !== null ? (r[colMap.email] || '').trim() : '',
+        propertyInterest: colMap.propertyInterest !== null ? (r[colMap.propertyInterest] || '').trim() : '',
+        estimatedValue: colMap.estimatedValue !== null ? (r[colMap.estimatedValue] || '').trim() : '',
+        origin: colMap.origin !== null ? (r[colMap.origin] || '').trim() : '',
+        tagsText: colMap.tags !== null ? (r[colMap.tags] || '').trim() : '',
+        excluded: false
+      }));
+    setReviewRows(rows);
+    setCsvStep('review');
   };
+
+  const updateReviewRow = (key: string, updates: Partial<ReviewRow>) => {
+    setReviewRows(prev => prev.map(r => (r.key === key ? { ...r, ...updates } : r)));
+  };
+
+  const removeReviewRow = (key: string) => {
+    setReviewRows(prev => prev.filter(r => r.key !== key));
+  };
+
+  // Row-level validation for the review table: missing Nome/Telefone block
+  // import outright; a phone repeated elsewhere in this same file is flagged
+  // so the user can dedupe before sending (the server also dedupes against
+  // leads already in the system, but not against siblings in the same batch).
+  const phoneCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    reviewRows.forEach(r => {
+      if (r.excluded) return;
+      const key = normalizePhoneKey(r.phone);
+      if (!key) return;
+      counts.set(key, (counts.get(key) || 0) + 1);
+    });
+    return counts;
+  }, [reviewRows]);
+
+  const rowErrors = (row: ReviewRow): string[] => {
+    const errs: string[] = [];
+    if (!row.name.trim()) errs.push('Nome é obrigatório');
+    if (!row.phone.trim()) errs.push('Telefone é obrigatório');
+    const phoneKey = normalizePhoneKey(row.phone);
+    if (phoneKey && (phoneCounts.get(phoneKey) || 0) > 1) errs.push('Telefone duplicado nesta planilha');
+    return errs;
+  };
+
+  const activeReviewRows = reviewRows.filter(r => !r.excluded);
+  const invalidReviewRows = activeReviewRows.filter(r => rowErrors(r).length > 0);
+  const validReviewCount = activeReviewRows.length - invalidReviewRows.length;
 
   const handleCsvImport = async () => {
     setImporting(true);
     setParseError('');
     try {
-      const rows = buildImportRows();
+      const rows: ImportLeadRow[] = activeReviewRows
+        .filter(r => rowErrors(r).length === 0)
+        .map(r => ({
+          name: r.name.trim(),
+          phone: r.phone.trim(),
+          email: r.email.trim() || undefined,
+          propertyInterest: r.propertyInterest.trim() || undefined,
+          estimatedValue: parseLocaleNumber(r.estimatedValue),
+          origin: r.origin.trim() || undefined,
+          tags: r.tagsText.trim() ? r.tagsText.split(/[,;]/).map(t => t.trim()).filter(Boolean) : undefined,
+          funnelId: targetFunnelId
+        }));
       const result = await importLeadsBulk(rows);
       setImportResult(result);
       setCsvStep('result');
@@ -215,6 +289,12 @@ export const ImportLeadsModal: React.FC = () => {
       return { idx, label };
     });
   }, [rawRows, hasHeaderRow]);
+
+  // Every hook above must run on every render regardless of open/closed state
+  // — this early return has to come after all of them (never before a hook),
+  // otherwise React sees a different number of hooks between renders and
+  // crashes with "Rendered more hooks than during the previous render."
+  if (!isImportModalOpen) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#3E4A3D]/40 backdrop-blur-xs animate-in fade-in duration-150">
@@ -474,12 +554,142 @@ export const ImportLeadsModal: React.FC = () => {
                     </button>
                     <button
                       type="button"
-                      disabled={!canProceedToImport || importing}
+                      disabled={!canProceedToImport}
+                      onClick={handleProceedToReview}
+                      className="px-5 py-2 bg-[#344E41] hover:bg-[#283d33] disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs rounded-xl font-semibold shadow-xs flex items-center gap-1.5 transition-colors"
+                    >
+                      <ShieldAlert className="w-3.5 h-3.5" />
+                      <span>Validar {dataRows.length} linha(s)</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {csvStep === 'review' && (
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <p className="text-xs text-[#3A403A]/70">
+                      Revise os dados antes de confirmar. Corrija Nome/Telefone diretamente na tabela ou remova a linha.
+                    </p>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">
+                        {validReviewCount} válido(s)
+                      </span>
+                      {invalidReviewRows.length > 0 && (
+                        <span className="text-[11px] font-bold text-red-700 bg-red-50 border border-red-200 px-2 py-0.5 rounded-full">
+                          {invalidReviewRows.length} com erro
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="overflow-x-auto border border-[#EAE7E2] rounded-xl max-h-96">
+                    <table className="w-full text-[11px]">
+                      <thead className="sticky top-0 bg-[#F4F1EA] z-10">
+                        <tr>
+                          <th className="text-left p-2 font-semibold text-[#344E41] whitespace-nowrap">Nome *</th>
+                          <th className="text-left p-2 font-semibold text-[#344E41] whitespace-nowrap">Telefone *</th>
+                          <th className="text-left p-2 font-semibold text-[#344E41] whitespace-nowrap">E-mail</th>
+                          <th className="text-left p-2 font-semibold text-[#344E41] whitespace-nowrap">Tags</th>
+                          <th className="text-left p-2 font-semibold text-[#344E41] whitespace-nowrap">Status</th>
+                          <th className="p-2"></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {reviewRows.map(row => {
+                          if (row.excluded) return null;
+                          const errs = rowErrors(row);
+                          const hasError = errs.length > 0;
+                          return (
+                            <tr key={row.key} className={`border-t border-[#EAE7E2] ${hasError ? 'bg-red-50/60' : ''}`}>
+                              <td className="p-1.5">
+                                <input
+                                  type="text"
+                                  value={row.name}
+                                  onChange={e => updateReviewRow(row.key, { name: e.target.value })}
+                                  className={`w-32 text-[11px] p-1.5 bg-white border rounded-lg text-[#3A403A] focus:outline-hidden focus:border-[#A3B18A] ${
+                                    !row.name.trim() ? 'border-red-300' : 'border-[#EAE7E2]'
+                                  }`}
+                                />
+                              </td>
+                              <td className="p-1.5">
+                                <input
+                                  type="text"
+                                  value={row.phone}
+                                  onChange={e => updateReviewRow(row.key, { phone: e.target.value })}
+                                  className={`w-28 text-[11px] p-1.5 bg-white border rounded-lg text-[#3A403A] focus:outline-hidden focus:border-[#A3B18A] ${
+                                    !row.phone.trim() ? 'border-red-300' : 'border-[#EAE7E2]'
+                                  }`}
+                                />
+                              </td>
+                              <td className="p-1.5">
+                                <input
+                                  type="text"
+                                  value={row.email}
+                                  onChange={e => updateReviewRow(row.key, { email: e.target.value })}
+                                  className="w-32 text-[11px] p-1.5 bg-white border border-[#EAE7E2] rounded-lg text-[#3A403A] focus:outline-hidden focus:border-[#A3B18A]"
+                                />
+                              </td>
+                              <td className="p-1.5">
+                                <input
+                                  type="text"
+                                  value={row.tagsText}
+                                  placeholder="quente, apartamento"
+                                  onChange={e => updateReviewRow(row.key, { tagsText: e.target.value })}
+                                  className="w-32 text-[11px] p-1.5 bg-white border border-[#EAE7E2] rounded-lg text-[#3A403A] focus:outline-hidden focus:border-[#A3B18A]"
+                                />
+                              </td>
+                              <td className="p-1.5">
+                                {hasError ? (
+                                  <span className="text-red-700 font-semibold" title={errs.join(' · ')}>
+                                    {errs[0]}{errs.length > 1 ? ` (+${errs.length - 1})` : ''}
+                                  </span>
+                                ) : (
+                                  <span className="text-emerald-700 font-semibold flex items-center gap-1">
+                                    <Check className="w-3 h-3" /> OK
+                                  </span>
+                                )}
+                              </td>
+                              <td className="p-1.5 text-right">
+                                <button
+                                  type="button"
+                                  onClick={() => removeReviewRow(row.key)}
+                                  title="Remover esta linha da importação"
+                                  className="p-1 text-[#3A403A]/40 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {invalidReviewRows.length > 0 && (
+                    <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-xl p-2.5">
+                      A importação fica bloqueada enquanto houver linhas com erro. Corrija Nome/Telefone na tabela acima ou remova a linha com o ícone de lixeira.
+                    </p>
+                  )}
+
+                  <div className="flex items-center justify-between pt-3 border-t border-[#EAE7E2]">
+                    <button
+                      type="button"
+                      onClick={() => setCsvStep('map')}
+                      className="px-3 py-2 text-[#3A403A] hover:bg-[#F1EFEC] text-xs rounded-xl font-medium transition-colors flex items-center gap-1.5"
+                    >
+                      <ArrowLeft className="w-3.5 h-3.5" />
+                      Voltar ao mapeamento
+                    </button>
+                    <button
+                      type="button"
+                      disabled={validReviewCount === 0 || invalidReviewRows.length > 0 || importing}
                       onClick={handleCsvImport}
                       className="px-5 py-2 bg-[#344E41] hover:bg-[#283d33] disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs rounded-xl font-semibold shadow-xs flex items-center gap-1.5 transition-colors"
                     >
                       <Upload className="w-3.5 h-3.5" />
-                      <span>{importing ? 'Importando...' : `Importar ${dataRows.length} lead(s)`}</span>
+                      <span>{importing ? 'Importando...' : `Confirmar importação de ${validReviewCount} lead(s)`}</span>
                     </button>
                   </div>
                 </div>
@@ -494,6 +704,11 @@ export const ImportLeadsModal: React.FC = () => {
                       {importResult.linkedToExistingClient > 0 && (
                         <p className="font-normal text-[11px]">
                           {importResult.linkedToExistingClient} deles vinculado(s) a clientes já cadastrados (telefone já existente).
+                        </p>
+                      )}
+                      {importResult.duplicatesSkipped > 0 && (
+                        <p className="font-normal text-[11px]">
+                          {importResult.duplicatesSkipped} linha(s) ignorada(s) por telefone já existir em outro lead.
                         </p>
                       )}
                     </div>

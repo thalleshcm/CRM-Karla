@@ -77,7 +77,9 @@ export const LeadDetailModal: React.FC = () => {
     openWhatsAppForLead,
     openClientPortalModal,
     generateClientPortalLink,
-    triggerConfetti
+    triggerConfetti,
+    addTagToLead,
+    removeTagFromLead
   } = useCrm();
 
   // Active Main Tab
@@ -102,6 +104,10 @@ export const LeadDetailModal: React.FC = () => {
 
   // Central de ações — secondary actions menu
   const [showMoreActions, setShowMoreActions] = useState(false);
+
+  // Tags section
+  const [showTagPicker, setShowTagPicker] = useState(false);
+  const [newTagInput, setNewTagInput] = useState('');
 
   // --- EDIT FORM STATE ---
   // Section 1: Dados Básicos
@@ -1397,6 +1403,90 @@ export const LeadDetailModal: React.FC = () => {
               {selectedLead.status === 'ganho' ? '🏆 Negociação concluída com sucesso.' : 'Negociação encerrada.'}
             </div>
           )}
+        </div>
+
+        {/* --- TAGS --- */}
+        <div className="px-6 pb-3 bg-[#FDFCFB] border-b border-[#EAE7E2] flex items-start gap-2 flex-wrap">
+          <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400 pt-1.5 shrink-0">Tags</span>
+          {(selectedLead.tags || []).map(tag => (
+            <span
+              key={tag}
+              className="flex items-center gap-1 text-[11px] font-semibold text-[#344E41] bg-[#A3B18A]/20 border border-[#A3B18A]/40 px-2 py-1 rounded-full"
+            >
+              <span>{tag}</span>
+              <button
+                type="button"
+                onClick={() => removeTagFromLead(selectedLead.id, tag)}
+                className="text-[#344E41]/50 hover:text-rose-600 transition-colors"
+                title={`Remover tag "${tag}"`}
+              >
+                <X className="w-3 h-3" />
+              </button>
+            </span>
+          ))}
+
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setShowTagPicker(v => !v)}
+              className="flex items-center gap-1 text-[11px] font-semibold text-[#3A403A]/70 bg-white hover:bg-[#F1EFEC] border border-dashed border-[#EAE7E2] px-2 py-1 rounded-full transition-colors"
+            >
+              <Plus className="w-3 h-3" />
+              <span>Adicionar tag</span>
+            </button>
+
+            {showTagPicker && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setShowTagPicker(false)} />
+                <div className="absolute left-0 top-full mt-1.5 z-50 w-56 bg-white border border-slate-200 rounded-xl shadow-lg p-2.5 space-y-2">
+                  {(settings.leadTags || []).filter(t => !(selectedLead.tags || []).includes(t)).length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 pb-2 border-b border-slate-100">
+                      {(settings.leadTags || [])
+                        .filter(t => !(selectedLead.tags || []).includes(t))
+                        .map(tag => (
+                          <button
+                            key={tag}
+                            type="button"
+                            onClick={() => {
+                              addTagToLead(selectedLead.id, tag);
+                              setShowTagPicker(false);
+                            }}
+                            className="text-[11px] font-medium text-[#344E41] bg-[#F4F1EA] hover:bg-[#A3B18A]/25 px-2 py-1 rounded-full transition-colors"
+                          >
+                            {tag}
+                          </button>
+                        ))}
+                    </div>
+                  )}
+                  <form
+                    onSubmit={e => {
+                      e.preventDefault();
+                      if (!newTagInput.trim()) return;
+                      addTagToLead(selectedLead.id, newTagInput);
+                      setNewTagInput('');
+                      setShowTagPicker(false);
+                    }}
+                    className="flex items-center gap-1.5"
+                  >
+                    <input
+                      autoFocus
+                      type="text"
+                      value={newTagInput}
+                      onChange={e => setNewTagInput(e.target.value)}
+                      placeholder="Nova tag..."
+                      className="flex-1 min-w-0 text-[11px] p-1.5 bg-[#FDFCFB] border border-[#EAE7E2] rounded-lg text-[#3A403A] focus:outline-hidden focus:border-[#A3B18A]"
+                    />
+                    <button
+                      type="submit"
+                      className="px-2 py-1.5 bg-[#344E41] hover:bg-[#283d33] text-white text-[11px] font-semibold rounded-lg transition-colors"
+                    >
+                      Criar
+                    </button>
+                  </form>
+                </div>
+              </>
+            )}
+          </div>
         </div>
 
         {/* --- MAIN TABS BAR --- */}

@@ -11,8 +11,11 @@ import {
   ModuleMetadata,
   UserRole,
   OutgoingWebhook,
-  McpToken
+  McpToken,
+  FIXED_COMPANY_NAME
 } from '../types';
+
+export const DEFAULT_LEAD_TAGS: string[] = ['Quente', 'Frio', 'Apartamento', 'Casa', 'Investidor', 'Alto padrão', 'WhatsApp'];
 
 export const MODULES_LIST: ModuleMetadata[] = [
   {
@@ -147,7 +150,7 @@ export const DEFAULT_FUNNELS: Funnel[] = [
 ];
 
 export const DEFAULT_SETTINGS: CrmSettings = {
-  companyName: '',
+  companyName: FIXED_COMPANY_NAME,
   slogan: '',
   brokerName: 'Administrador',
   brokerRole: 'Diretor / Administrador',
@@ -198,6 +201,7 @@ export const DEFAULT_SETTINGS: CrmSettings = {
   ],
   monthlySalesGoalCount: 4,
   monthlySalesGoalVgv: 3500000,
+  leadTags: DEFAULT_LEAD_TAGS,
   evolutionApiUrl: '',
   evolutionApiKey: '',
   evolutionInstance: '',

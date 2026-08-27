@@ -20,8 +20,11 @@ import {
   McpToken,
   Invite,
   AuditLogEntry,
-  Client
+  Client,
+  FIXED_COMPANY_NAME
 } from './src/types';
+
+const DEFAULT_LEAD_TAGS = ['Quente', 'Frio', 'Apartamento', 'Casa', 'Investidor', 'Alto padrão', 'WhatsApp'];
 import { mountMcpServer } from './src/services/mcpServer';
 
 const app = express();
@@ -306,7 +309,7 @@ const DEFAULT_DATABASE_STATE: DatabaseSchema = {
     }
   },
   settings: {
-    companyName: '',
+    companyName: FIXED_COMPANY_NAME,
     slogan: '',
     brokerName: 'Administrador',
     brokerRole: 'Diretor / Administrador',
@@ -357,6 +360,7 @@ const DEFAULT_DATABASE_STATE: DatabaseSchema = {
     ],
     monthlySalesGoalCount: 4,
     monthlySalesGoalVgv: 3500000,
+    leadTags: DEFAULT_LEAD_TAGS,
     evolutionApiUrl: '',
     evolutionApiKey: '',
     evolutionInstance: '',
@@ -454,7 +458,12 @@ async function loadDatabase() {
     users: isFreshDatabase ? DEFAULT_DATABASE_STATE.users : users,
     funnels: funnelRows.length ? (funnelRows.map(fromSnakeRow) as Funnel[]) : DEFAULT_DATABASE_STATE.funnels,
     rolePermissions: rolePermRows.length ? rolePermissions : DEFAULT_DATABASE_STATE.rolePermissions,
-    settings: settingsRow ? { ...DEFAULT_DATABASE_STATE.settings, ...settingsRow.data } : DEFAULT_DATABASE_STATE.settings,
+    // companyName is forced to the fixed constant on every load, regardless
+    // of what's stored — protects against pre-existing rows saved before
+    // this lock was added, or any write path that slips past the sync guard.
+    settings: settingsRow
+      ? { ...DEFAULT_DATABASE_STATE.settings, ...settingsRow.data, companyName: FIXED_COMPANY_NAME }
+      : DEFAULT_DATABASE_STATE.settings,
     clients: clientRows.map(fromSnakeRow) as Client[],
     leads: leadRows.map(fromHybridRow) as Lead[],
     activities: activityRows.map(fromHybridRow) as Activity[],
@@ -852,7 +861,9 @@ app.post('/api/state/sync', requireAuth, (req, res) => {
     // inboundWebhookSecret/mcpEnabled are legitimate to round-trip from the
     // client, but mcpTokens/outgoingWebhooks are managed exclusively through
     // their own routes below and must never be clobbered by this generic sync.
-    dbState.settings = { ...dbState.settings, ...incoming.settings };
+    // companyName is never accepted from the client — the CRM serves a single
+    // fixed agency name, so no request (however it got constructed) can rename it.
+    dbState.settings = { ...dbState.settings, ...incoming.settings, companyName: FIXED_COMPANY_NAME };
   }
 
   // The permissions matrix is admin-only everywhere else (PUT
@@ -986,14 +997,33 @@ app.post('/api/leads/import', requireAuth, requirePermission('canCreateLeads'), 
 
   let created = 0;
   let linkedToExistingClient = 0;
+  let duplicatesSkipped = 0;
   const errors: { row: number; error: string }[] = [];
+  // Tracks phones already committed within this same import batch — a
+  // spreadsheet with the same contact on two rows shouldn't create two leads.
+  const seenPhonesInBatch = new Set<string>();
 
   rows.forEach((row: any, i: number) => {
     if (!row?.name || !row?.phone) {
       errors.push({ row: i + 1, error: 'Nome e telefone são obrigatórios' });
       return;
     }
-    const wasKnownClient = !!(row.phone && dbState.clients.some(c => formatBrazilPhone(c.phone) === formatBrazilPhone(row.phone)));
+    const normalizedPhone = formatBrazilPhone(row.phone);
+    if (!normalizedPhone) {
+      errors.push({ row: i + 1, error: 'Telefone inválido' });
+      return;
+    }
+    // Dedup primarily by phone: skip if a lead already exists for this
+    // number (previous import/manual entry) or it repeats earlier in this
+    // same batch, instead of creating another lead for the same contact.
+    const alreadyExists = seenPhonesInBatch.has(normalizedPhone) || dbState.leads.some(l => formatBrazilPhone(l.phone) === normalizedPhone);
+    if (alreadyExists) {
+      duplicatesSkipped++;
+      return;
+    }
+    seenPhonesInBatch.add(normalizedPhone);
+
+    const wasKnownClient = dbState.clients.some(c => formatBrazilPhone(c.phone) === normalizedPhone);
     buildLeadRecord({
       name: row.name,
       phone: row.phone,
@@ -1005,6 +1035,7 @@ app.post('/api/leads/import', requireAuth, requirePermission('canCreateLeads'), 
       temperature: row.temperature || 'morno',
       origin: row.origin || 'Importação',
       brokerId: row.brokerId || undefined,
+      tags: Array.isArray(row.tags) && row.tags.length > 0 ? row.tags : undefined,
       notes: row.notes || 'Importado em lote.'
     } as any);
     created++;
@@ -1012,7 +1043,7 @@ app.post('/api/leads/import', requireAuth, requirePermission('canCreateLeads'), 
   });
 
   saveDatabase();
-  res.json({ success: true, created, linkedToExistingClient, errors });
+  res.json({ success: true, created, linkedToExistingClient, duplicatesSkipped, errors });
 });
 
 app.put('/api/leads/:id', requireAuth, requirePermission('canEditLeads'), (req, res) => {
@@ -1461,7 +1492,9 @@ app.get('/api/settings', requireAuth, (req, res) => {
 });
 
 app.put('/api/settings', requireAuth, (req, res) => {
-  dbState.settings = { ...dbState.settings, ...req.body };
+  // companyName is fixed system-wide (single agency) — never accept it from
+  // the client, mirroring the same guard on POST /api/state/sync.
+  dbState.settings = { ...dbState.settings, ...req.body, companyName: FIXED_COMPANY_NAME };
   saveDatabase();
   res.json(dbState.settings);
 });

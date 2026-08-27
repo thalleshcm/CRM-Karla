@@ -580,7 +580,13 @@ export const TeamSection: React.FC = () => {
     })
     .sort((a, b) => {
       if (sortBy === 'lastLogin') return (b.lastLoginAt || '').localeCompare(a.lastLoginAt || '');
-      if (sortBy === 'leads') return (b.assignedLeadCount || 0) - (a.assignedLeadCount || 0);
+      // Live count from `leads` (source of truth), not the stored
+      // assignedLeadCount counter — that field is only ever incremented/
+      // decremented by a couple of specific code paths (API lead create/
+      // delete, manual reassignment), so it silently drifts whenever a lead
+      // is created some other way (e.g. the "Novo Lead" modal, which never
+      // touches it) or a broker is reassigned from the lead's own edit form.
+      if (sortBy === 'leads') return assignedLeadsOf(b.id).length - assignedLeadsOf(a.id).length;
       return a.name.localeCompare(b.name);
     });
 
@@ -597,7 +603,7 @@ export const TeamSection: React.FC = () => {
       u.active ? 'Ativo' : 'Inativo',
       u.creci || '',
       u.phone || '',
-      String(u.assignedLeadCount ?? 0),
+      String(assignedLeadsOf(u.id).length),
       u.lastLoginAt ? new Date(u.lastLoginAt).toLocaleString('pt-BR') : 'Nunca acessou'
     ]);
     const csv = [header, ...rows]
@@ -962,7 +968,7 @@ export const TeamSection: React.FC = () => {
                     {u.roleLabel} • {u.creci} • {u.email}
                   </p>
                   <p className="text-[10px] text-[#3A403A]/45 mt-0.5">
-                    {(u.assignedLeadCount ?? 0)} lead(s) na carteira
+                    {assignedLeadsOf(u.id).length} lead(s) na carteira
                     {u.lastLoginAt ? ` • último acesso em ${new Date(u.lastLoginAt).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}` : ' • nunca acessou'}
                   </p>
                   {canManageTeam && u.role === 'broker' && (
